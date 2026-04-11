@@ -89,7 +89,7 @@
                                 <span class="pill" :class="'pill-' + s.severity" x-text="s.status || '—'"></span>
                             </td>
                             <td class="mono text-slate-300" x-text="formatTs(s.last_success_at)"></td>
-                            <td class="mono" :class="ageClass(s.age_minutes)" x-text="formatAge(s.age_minutes)"></td>
+                            <td class="mono" :class="severityTextClass(s.severity)" x-text="formatAge(s.age_minutes)"></td>
                         </tr>
                     </template>
                 </tbody>
@@ -112,7 +112,7 @@
                             </td>
                             <td class="mono text-right" x-text="formatNum(f.rows)"></td>
                             <td class="mono text-slate-300" x-text="formatTs(f.latest_sync)"></td>
-                            <td class="mono" :class="ageClass(f.age_minutes)" x-text="formatAge(f.age_minutes)"></td>
+                            <td class="mono" :class="severityTextClass(f.severity)" x-text="formatAge(f.age_minutes)"></td>
                         </tr>
                     </template>
                 </tbody>
@@ -285,11 +285,11 @@ function dashboard() {
             if (n === null || n === undefined) return '—';
             return n.toLocaleString();
         },
-        ageClass(min) {
-            if (min === null || min === undefined) return 'text-slate-500';
-            if (min >= {{ 360 }}) return 'text-red-400';
-            if (min >= {{ 120 }}) return 'text-yellow-400';
-            return 'text-green-400';
+        severityTextClass(sev) {
+            if (sev === 'red')    return 'text-red-400';
+            if (sev === 'yellow') return 'text-yellow-400';
+            if (sev === 'green')  return 'text-green-400';
+            return 'text-slate-500';
         },
     };
 }

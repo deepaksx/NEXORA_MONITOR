@@ -32,6 +32,10 @@
     </style>
 </head>
 <body x-data="dashboard()" x-init="load(); setInterval(load, {{ refresh_seconds * 1000 }})">
+<script>
+    // Base URL injected by server — empty at root, or e.g. "/monitor" when mounted under a subpath.
+    window.NEXORA_BASE = {{ (request.scope.get('root_path') or '') | tojson }};
+</script>
 
 <div class="max-w-7xl mx-auto p-5">
 
@@ -39,7 +43,7 @@
     <header class="flex items-center justify-between mb-5">
         <div>
             <h1 class="text-2xl font-bold">Nexora Monitor</h1>
-            <div class="text-xs text-slate-400 mono" x-text="'last refresh: ' + (lastRefresh || '—')"></div>
+            <div class="text-xs text-slate-400 mono" x-text="'last refresh: ' + (lastRefresh || '—') + ' (Abu Dhabi)'"></div>
         </div>
         <div class="flex items-center gap-4">
             <div class="flex items-center gap-2">
@@ -235,22 +239,39 @@ function dashboard() {
             if (this.loading) return;
             this.loading = true;
             try {
-                const resp = await fetch('/api/status', { cache: 'no-store' });
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/status', { cache: 'no-store' });
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 this.state = await resp.json();
-                this.lastRefresh = new Date().toLocaleTimeString();
+                this.lastRefresh = this.nowAbuDhabi();
             } catch (e) {
                 this.state = { overall: 'red', issues: [{ severity: 'red', source: 'monitor', message: 'fetch failed: ' + e.message, at: null }] };
-                this.lastRefresh = new Date().toLocaleTimeString() + ' (error)';
+                this.lastRefresh = this.nowAbuDhabi() + ' (error)';
             } finally {
                 this.loading = false;
             }
+        },
+        nowAbuDhabi() {
+            return new Date().toLocaleTimeString('en-GB', {
+                timeZone: 'Asia/Dubai',
+                hour12: false,
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+            });
         },
         formatTs(iso) {
             if (!iso) return '—';
             try {
                 const d = new Date(iso);
-                return d.toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+                // Render all sync timestamps in Abu Dhabi time, 24-hour, "YYYY-MM-DD HH:MM:SS"
+                const parts = d.toLocaleString('en-GB', {
+                    timeZone: 'Asia/Dubai',
+                    hour12: false,
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                });
+                // en-GB gives "DD/MM/YYYY, HH:MM:SS" — reformat to "YYYY-MM-DD HH:MM:SS"
+                const m = parts.match(/(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2}):(\d{2})/);
+                if (m) return `${m[3]}-${m[2]}-${m[1]} ${m[4]}:${m[5]}:${m[6]}`;
+                return parts;
             } catch { return iso; }
         },
         formatAge(min) {

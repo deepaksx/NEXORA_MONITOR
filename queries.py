@@ -73,6 +73,18 @@ def _age_minutes(value: Any) -> float | None:
     return None
 
 
+def _fmt_age(age_min: float | None) -> str:
+    if age_min is None:
+        return "—"
+    if age_min < 1:
+        return f"{round(age_min * 60)}s"
+    if age_min < 60:
+        return f"{round(age_min)}m"
+    if age_min < 1440:
+        return f"{age_min / 60:.1f}h"
+    return f"{age_min / 1440:.1f}d"
+
+
 def _freshness_severity(age_min: float | None) -> str:
     if age_min is None:
         return "unknown"
@@ -88,17 +100,18 @@ def _freshness_severity(age_min: float | None) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def graph_sync_stages() -> list[dict]:
+    # Skip the 'documents' sync_type — leftover from an earlier schema, never actually used.
     sql = """
         SELECT sync_type, status, last_sync_at, last_success_at,
                LEFT(COALESCE(error_message,''), 500) AS error_message
         FROM graph_sync_state
+        WHERE sync_type <> 'documents'
         ORDER BY
           CASE sync_type
             WHEN 'emails' THEN 1
             WHEN 'calendar' THEN 2
             WHEN 'teams_chats' THEN 3
             WHEN 'sharepoint' THEN 4
-            WHEN 'documents' THEN 5
             ELSE 99
           END
     """
@@ -107,11 +120,12 @@ def graph_sync_stages() -> list[dict]:
     for r in rows:
         age = _age_minutes(r["last_success_at"])
         severity = _freshness_severity(age)
-        # status != success escalates one step
-        if r["status"] not in ("success", "idle", "partial_error") and severity == "green":
-            severity = "yellow"
+        # 'success' and 'partial_error' (= known unfixable on-prem mailbox 404s) are both OK.
+        # Only real error statuses escalate severity.
         if r["status"] == "error":
             severity = "red"
+        elif r["status"] not in ("success", "idle", "partial_error", "running") and severity == "green":
+            severity = "yellow"
         out.append({
             "sync_type": r["sync_type"],
             "status": r["status"],
@@ -129,21 +143,36 @@ def graph_sync_stages() -> list[dict]:
 # ─────────────────────────────────────────────────────────────
 
 FRESHNESS_SOURCES = [
-    # label,                   table,                 data_col,                    sync_col
-    ("emails",              "emails",              "received_at",               "synced_at"),
-    ("email_attachments",   "email_attachments",   "created_at",                "created_at"),
-    ("teams_chats",         "teams_chats",         "last_modified_datetime",    "synced_at"),
-    ("calendar_events",     "calendar_events",     "start_time",                "synced_at"),
-    ("meetings",            "meetings",            "date",                      "created_at"),
-    ("meeting_transcripts", "meeting_transcripts", "created_at",                "created_at"),
-    ("sharepoint_files",    "sharepoint_files",    "last_modified_datetime",    "synced_at"),
-    ("document_embeddings", "document_embeddings", "created_at",                "created_at"),
+    # label,                   table,                 data_col,                    sync_col,      warn_min, crit_min
+    ("emails",              "emails",              "received_at",               "synced_at",   None,     None),
+    ("email_attachments",   "email_attachments",   "created_at",                "created_at",  None,     None),
+    ("teams_chats",         "teams_chats",         "last_modified_datetime",    "synced_at",   None,     None),
+    ("calendar_events",     "calendar_events",     "start_time",                "synced_at",   None,     None),
+    # Meetings & transcripts are bursty — only arrive when a meeting happens.
+    # Use a 3-day / 7-day threshold so a quiet evening doesn't cry wolf.
+    ("meetings",            "meetings",            "date",                      "created_at",  4320,     10080),
+    ("meeting_transcripts", "meeting_transcripts", "created_at",                "created_at",  4320,     10080),
+    ("sharepoint_files",    "sharepoint_files",    "last_modified_datetime",    "synced_at",   None,     None),
+    ("document_embeddings", "document_embeddings", "created_at",                "created_at",  None,     None),
 ]
+
+
+def _severity_with_thresholds(age_min: float | None,
+                              warn: int | None, crit: int | None) -> str:
+    if age_min is None:
+        return "unknown"
+    warn = warn if warn is not None else FRESHNESS_WARN_MIN
+    crit = crit if crit is not None else FRESHNESS_CRIT_MIN
+    if age_min >= crit:
+        return "red"
+    if age_min >= warn:
+        return "yellow"
+    return "green"
 
 
 def data_freshness() -> list[dict]:
     out = []
-    for label, table, data_col, sync_col in FRESHNESS_SOURCES:
+    for label, table, data_col, sync_col, warn_min, crit_min in FRESHNESS_SOURCES:
         sql = (
             f"SELECT COUNT(*) AS rows, "
             f"       MAX({data_col}) AS latest_data, "
@@ -166,7 +195,7 @@ def data_freshness() -> list[dict]:
             "latest_data": _iso(r.get("latest_data")),
             "latest_sync": _iso(r.get("latest_sync")),
             "age_minutes": age,
-            "severity": _freshness_severity(age),
+            "severity": _severity_with_thresholds(age, warn_min, crit_min),
             "error": None,
         })
     return out
@@ -334,10 +363,24 @@ def pipeline_stages(stages: list[dict], freshness: list[dict],
     # 1. Humans — can't measure directly; use "are emails flowing?" as proxy
     humans_sev = by_src.get("emails", {}).get("severity", "unknown")
 
-    # 2. M365 / Fireflies — meetings + transcripts freshness
+    # 2. M365 / Fireflies — meetings + transcripts. These don't arrive on a
+    # fixed cadence (only when a meeting actually happens), so we use a
+    # much more lenient threshold: warn after 3 days, red after 7 days.
+    def _meeting_sev(src: dict | None) -> str:
+        if not src:
+            return "unknown"
+        age = src.get("age_minutes")
+        if age is None:
+            return "yellow"
+        if age >= 10080:    # 7 days
+            return "red"
+        if age >= 4320:     # 3 days
+            return "yellow"
+        return "green"
+
     m365_sev = _worst(
-        by_src.get("meetings", {}).get("severity", "unknown"),
-        by_src.get("meeting_transcripts", {}).get("severity", "unknown"),
+        _meeting_sev(by_src.get("meetings")),
+        _meeting_sev(by_src.get("meeting_transcripts")),
     )
 
     # 3. Graph Sync — worst of the 5 sync stages
@@ -396,9 +439,12 @@ def issues(stages: list[dict], freshness: list[dict], father: dict) -> list[dict
     out: list[dict] = []
 
     for s in stages:
-        if s.get("error_preview"):
+        # Only surface error previews when the stage severity is actually a problem.
+        # 'partial_error' with green severity = known unfixable on-prem mailbox 404s,
+        # not actionable, don't spam the issues panel with them.
+        if s.get("error_preview") and s.get("severity") in ("yellow", "red"):
             out.append({
-                "severity": "yellow" if s["severity"] != "red" else "red",
+                "severity": s["severity"],
                 "source": f"graph_sync.{s['sync_type']}",
                 "message": s["error_preview"][:300],
                 "at": s.get("last_sync_at"),
@@ -413,19 +459,29 @@ def issues(stages: list[dict], freshness: list[dict], father: dict) -> list[dict
             })
 
     for f in freshness:
+        if f.get("error"):
+            out.append({
+                "severity": "red",
+                "source": f"freshness.{f['source']}",
+                "message": f"Query failed: {f['error'][:200]}",
+                "at": None,
+            })
+            continue
+        age = f.get("age_minutes")
+        if age is None:
+            continue  # no data yet — not necessarily a problem, don't spam issues
         if f.get("severity") == "red":
             out.append({
                 "severity": "red",
                 "source": f"freshness.{f['source']}",
-                "message": f"No sync for {f.get('age_minutes')} minutes "
-                           f"(threshold {FRESHNESS_CRIT_MIN} min)",
+                "message": f"Sync lag {_fmt_age(age)}",
                 "at": f.get("latest_sync"),
             })
         elif f.get("severity") == "yellow":
             out.append({
                 "severity": "yellow",
                 "source": f"freshness.{f['source']}",
-                "message": f"Sync lag {f.get('age_minutes')} min",
+                "message": f"Sync lag {_fmt_age(age)}",
                 "at": f.get("latest_sync"),
             })
 

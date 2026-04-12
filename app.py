@@ -52,9 +52,9 @@ def index(request: Request):
 
 
 @app.get("/api/status")
-def api_status():
+def api_status(project_id: int | None = None):
     try:
-        state = queries.dashboard_state()
+        state = queries.dashboard_state(project_id=project_id)
     except Exception as e:  # noqa: BLE001
         return JSONResponse(
             status_code=500,

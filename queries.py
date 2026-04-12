@@ -333,20 +333,29 @@ def father_health() -> dict:
 #  Insights (ke_insights — ephemeral, refreshed every run)
 # ─────────────────────────────────────────────────────────────
 
-def insights_list() -> list[dict]:
+def all_projects() -> list[dict]:
+    sql = """
+        SELECT id, name, project_code, is_active, phase, status
+        FROM projects
+        ORDER BY is_active DESC, name
+    """
+    return [dict(r) for r in _fetch("npm_projects", sql)]
+
+
+def insights_list(project_id: int = 9) -> list[dict]:
     sql = """
         SELECT id, insight_type, title,
                LEFT(COALESCE(description,''), 500) AS description,
                severity, status, detected_by, created_at
         FROM ke_insights
-        WHERE project_id = 9
+        WHERE project_id = %s
         ORDER BY
             CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2
                           WHEN 'medium' THEN 3 ELSE 4 END,
             insight_type,
             created_at DESC
     """
-    rows = _fetch("npm_projects", sql)
+    rows = _fetch("npm_projects", sql, [project_id])
     for r in rows:
         r["created_at"] = _iso(r.get("created_at"))
     return rows
@@ -356,14 +365,14 @@ def insights_list() -> list[dict]:
 #  Risk Register (permanent — items never deleted)
 # ─────────────────────────────────────────────────────────────
 
-def risk_register_list() -> list[dict]:
+def risk_register_list(project_id: int = 9) -> list[dict]:
     sql = """
         SELECT risk_code, title, category, probability, impact,
                risk_score, owner, status,
                LEFT(COALESCE(mitigation_plan,''), 300) AS mitigation_plan,
                raised_by, created_at, updated_at
         FROM risk_register
-        WHERE project_id = 9
+        WHERE project_id = %s
         ORDER BY
             CASE status WHEN 'open' THEN 1 WHEN 'mitigated' THEN 2
                         WHEN 'accepted' THEN 3 WHEN 'false_positive' THEN 4
@@ -373,7 +382,7 @@ def risk_register_list() -> list[dict]:
                         ELSE 5 END,
             risk_code
     """
-    rows = _fetch("npm_projects", sql)
+    rows = _fetch("npm_projects", sql, [project_id])
     for r in rows:
         r["created_at"] = _iso(r.get("created_at"))
         r["updated_at"] = _iso(r.get("updated_at"))
@@ -553,7 +562,7 @@ def issues(stages: list[dict], freshness: list[dict], father: dict) -> list[dict
 #  Entry point — one call returns the whole dashboard state
 # ─────────────────────────────────────────────────────────────
 
-def dashboard_state() -> dict:
+def dashboard_state(project_id: int | None = None) -> dict:
     started = datetime.now(timezone.utc)
     errors: list[str] = []
 
@@ -564,12 +573,18 @@ def dashboard_state() -> dict:
             errors.append(f"{label}: {e}")
             return default
 
+    # Resolve project_id: use the provided one, or default to first active project
+    all_proj = safe("all_projects", all_projects, [])
+    if project_id is None:
+        active = [p for p in all_proj if p.get("is_active")]
+        project_id = active[0]["id"] if active else 9
+
     stages    = safe("graph_sync_stages", graph_sync_stages, [])
     freshness = safe("data_freshness",    data_freshness,    [])
     projects  = safe("active_projects",   active_projects,   [])
     father    = safe("father_health",     father_health,     {"severity": "unknown"})
-    insights  = safe("insights_list",     insights_list,     [])
-    risks     = safe("risk_register_list",risk_register_list,[])
+    insights  = safe("insights_list",     lambda: insights_list(project_id),     [])
+    risks     = safe("risk_register_list",lambda: risk_register_list(project_id),[])
 
     pipeline  = pipeline_stages(stages, freshness, projects, father)
     issues_l  = issues(stages, freshness, father)
@@ -587,6 +602,8 @@ def dashboard_state() -> dict:
         "issues": issues_l,
         "insights": insights,
         "risk_register": risks,
+        "all_projects": all_proj,
+        "selected_project_id": project_id,
         "thresholds": {
             "warn_minutes": FRESHNESS_WARN_MIN,
             "crit_minutes": FRESHNESS_CRIT_MIN,

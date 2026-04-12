@@ -15,6 +15,14 @@
         .pill-yellow { background: rgba(234,179,8,0.15);  color: #facc15; border: 1px solid rgba(234,179,8,0.35); }
         .pill-red    { background: rgba(239,68,68,0.15);  color: #f87171; border: 1px solid rgba(239,68,68,0.35); }
         .pill-unknown{ background: rgba(100,116,139,0.15);color: #94a3b8; border: 1px solid rgba(100,116,139,0.35); }
+        .pill-open   { background: rgba(239,68,68,0.15);  color: #f87171; border: 1px solid rgba(239,68,68,0.35); }
+        .pill-mitigated { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.35); }
+        .pill-accepted { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.35); }
+        .pill-false_positive { background: rgba(100,116,139,0.15); color: #94a3b8; border: 1px solid rgba(100,116,139,0.35); }
+        .pill-critical { background: rgba(239,68,68,0.15);  color: #f87171; border: 1px solid rgba(239,68,68,0.35); }
+        .pill-high   { background: rgba(251,146,60,0.15);  color: #fb923c; border: 1px solid rgba(251,146,60,0.35); }
+        .pill-medium { background: rgba(234,179,8,0.15);  color: #facc15; border: 1px solid rgba(234,179,8,0.35); }
+        .pill-low    { background: rgba(34,197,94,0.15);  color: #4ade80; border: 1px solid rgba(34,197,94,0.35); }
         .dot { width: 0.6rem; height: 0.6rem; border-radius: 9999px; display: inline-block; }
         .dot-green  { background: #22c55e; box-shadow: 0 0 12px rgba(34,197,94,0.7); }
         .dot-yellow { background: #eab308; box-shadow: 0 0 12px rgba(234,179,8,0.7); }
@@ -27,20 +35,21 @@
         tr:hover td { background: rgba(30,41,59,0.3); }
         .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
         .stage-arrow { color: #475569; font-size: 1.25rem; user-select: none; }
-        .flash { animation: flash 0.6s ease-out; }
-        @keyframes flash { 0% { background: rgba(59,130,246,0.25); } 100% { background: transparent; } }
+        .tab-btn { padding: 10px 20px; font-size: 0.9rem; font-weight: 500; border-bottom: 2px solid transparent; color: #94a3b8; cursor: pointer; transition: all 0.15s; }
+        .tab-btn:hover { color: #e2e8f0; }
+        .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+        .desc-cell { max-width: 400px; white-space: normal; word-break: break-word; line-height: 1.4; }
     </style>
 </head>
 <body x-data="dashboard()" x-init="load(); setInterval(load, {{ refresh_seconds * 1000 }})">
 <script>
-    // Base URL injected by server — empty at root, or e.g. "/monitor" when mounted under a subpath.
     window.NEXORA_BASE = {{ (request.scope.get('root_path') or '') | tojson }};
 </script>
 
 <div class="max-w-7xl mx-auto p-5">
 
-    <!-- Header / top status bar -->
-    <header class="flex items-center justify-between mb-5">
+    <!-- Header -->
+    <header class="flex items-center justify-between mb-4">
         <div>
             <h1 class="text-2xl font-bold">Nexora Monitor</h1>
             <div class="text-xs text-slate-400 mono" x-text="'last refresh: ' + (lastRefresh || '—') + ' (Abu Dhabi)'"></div>
@@ -54,81 +63,90 @@
         </div>
     </header>
 
-    <!-- Pipeline flow strip -->
-    <div class="card p-4 mb-5">
-        <h2 class="text-sm font-semibold mb-3">Pipeline</h2>
-        <div class="flex items-center gap-2 overflow-x-auto pb-1">
-            <template x-for="(stage, idx) in (state.pipeline || [])" :key="stage.key">
-                <div class="flex items-center gap-2 flex-shrink-0">
-                    <div class="flex flex-col items-center">
-                        <div class="dot mb-1.5" :class="'dot-' + stage.severity"></div>
-                        <div class="text-xs text-slate-300 whitespace-nowrap" x-text="stage.label"></div>
-                    </div>
-                    <span class="stage-arrow" x-show="idx < (state.pipeline.length - 1)">→</span>
-                </div>
-            </template>
-            <div x-show="!(state.pipeline || []).length" class="text-xs text-slate-500">loading…</div>
-        </div>
+    <!-- Tab bar -->
+    <div class="flex gap-1 border-b border-slate-700 mb-5">
+        <button class="tab-btn" :class="tab === 'pipeline' && 'active'" @click="tab = 'pipeline'">Pipeline</button>
+        <button class="tab-btn" :class="tab === 'insights' && 'active'" @click="tab = 'insights'">
+            Insights
+            <span class="ml-1 text-xs" x-show="(state.insights || []).length"
+                  x-text="'(' + (state.insights || []).length + ')'"></span>
+        </button>
+        <button class="tab-btn" :class="tab === 'risk_register' && 'active'" @click="tab = 'risk_register'">
+            Risk Register
+            <span class="ml-1 text-xs" x-show="(state.risk_register || []).length"
+                  x-text="'(' + (state.risk_register || []).length + ')'"></span>
+        </button>
     </div>
 
-    <!-- Two-column grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: Pipeline (existing dashboard content)  -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div x-show="tab === 'pipeline'" x-cloak>
 
-        <!-- Graph-sync stages -->
-        <div class="card p-4">
-            <h2 class="text-sm font-semibold mb-2">Graph Sync — Stages</h2>
-            <table>
-                <thead>
-                    <tr><th>Stage</th><th>Status</th><th>Last Success</th><th>Age</th></tr>
-                </thead>
-                <tbody>
-                    <template x-for="s in (state.stages || [])" :key="s.sync_type">
-                        <tr>
-                            <td class="font-medium" x-text="s.sync_type"></td>
-                            <td>
-                                <span class="pill" :class="'pill-' + s.severity" x-text="s.status || '—'"></span>
-                            </td>
-                            <td class="mono text-slate-300" x-text="formatTs(s.last_success_at)"></td>
-                            <td class="mono" :class="severityTextClass(s.severity)" x-text="formatAge(s.age_minutes)"></td>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
+        <!-- Pipeline flow strip -->
+        <div class="card p-4 mb-5">
+            <h2 class="text-sm font-semibold mb-3">Pipeline</h2>
+            <div class="flex items-center gap-2 overflow-x-auto pb-1">
+                <template x-for="(stage, idx) in (state.pipeline || [])" :key="stage.key">
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <div class="flex flex-col items-center">
+                            <div class="dot mb-1.5" :class="'dot-' + stage.severity"></div>
+                            <div class="text-xs text-slate-300 whitespace-nowrap" x-text="stage.label"></div>
+                        </div>
+                        <span class="stage-arrow" x-show="idx < (state.pipeline.length - 1)">→</span>
+                    </div>
+                </template>
+                <div x-show="!(state.pipeline || []).length" class="text-xs text-slate-500">loading...</div>
+            </div>
         </div>
 
-        <!-- Data freshness -->
-        <div class="card p-4">
-            <h2 class="text-sm font-semibold mb-2">Data Freshness — nxsys DB</h2>
-            <table>
-                <thead>
-                    <tr><th>Source</th><th class="text-right">Rows</th><th>Latest Sync</th><th>Age</th></tr>
-                </thead>
-                <tbody>
-                    <template x-for="f in (state.freshness || [])" :key="f.source">
-                        <tr>
-                            <td class="font-medium">
-                                <span class="dot mr-2" :class="'dot-' + f.severity"></span>
-                                <span x-text="f.source"></span>
-                            </td>
-                            <td class="mono text-right" x-text="formatNum(f.rows)"></td>
-                            <td class="mono text-slate-300" x-text="formatTs(f.latest_sync)"></td>
-                            <td class="mono" :class="severityTextClass(f.severity)" x-text="formatAge(f.age_minutes)"></td>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
-        <!-- Active projects -->
-        <div class="card p-4">
-            <h2 class="text-sm font-semibold mb-2">
-                Active Projects
-                <span class="text-xs font-normal text-slate-400" x-text="'(' + (state.projects?.length || 0) + ')'"></span>
-            </h2>
-            <div x-show="!(state.projects || []).length" class="text-xs text-slate-500 italic">No active projects.</div>
-            <div class="space-y-3">
+            <!-- Graph-sync stages -->
+            <div class="card p-4">
+                <h2 class="text-sm font-semibold mb-2">Graph Sync — Stages</h2>
+                <table>
+                    <thead><tr><th>Stage</th><th>Status</th><th>Last Success</th><th>Age</th></tr></thead>
+                    <tbody>
+                        <template x-for="s in (state.stages || [])" :key="s.sync_type">
+                            <tr>
+                                <td class="font-medium" x-text="s.sync_type"></td>
+                                <td><span class="pill" :class="'pill-' + s.severity" x-text="s.status || '—'"></span></td>
+                                <td class="mono text-slate-300" x-text="formatTs(s.last_success_at)"></td>
+                                <td class="mono" :class="severityTextClass(s.severity)" x-text="formatAge(s.age_minutes)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Data freshness -->
+            <div class="card p-4">
+                <h2 class="text-sm font-semibold mb-2">Data Freshness — nxsys DB</h2>
+                <table>
+                    <thead><tr><th>Source</th><th class="text-right">Rows</th><th>Latest Sync</th><th>Age</th></tr></thead>
+                    <tbody>
+                        <template x-for="f in (state.freshness || [])" :key="f.source">
+                            <tr>
+                                <td class="font-medium">
+                                    <span class="dot mr-2" :class="'dot-' + f.severity"></span>
+                                    <span x-text="f.source"></span>
+                                </td>
+                                <td class="mono text-right" x-text="formatNum(f.rows)"></td>
+                                <td class="mono text-slate-300" x-text="formatTs(f.latest_sync)"></td>
+                                <td class="mono" :class="severityTextClass(f.severity)" x-text="formatAge(f.age_minutes)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Active projects -->
+            <div class="card p-4">
+                <h2 class="text-sm font-semibold mb-2">Active Projects <span class="text-xs font-normal text-slate-400" x-text="'(' + (state.projects?.length || 0) + ')'"></span></h2>
+                <div x-show="!(state.projects || []).length" class="text-xs text-slate-500 italic">No active projects.</div>
                 <template x-for="p in (state.projects || [])" :key="p.id">
-                    <div class="border border-slate-700 rounded-md p-3">
+                    <div class="border border-slate-700 rounded-md p-3 mb-2">
                         <div class="flex justify-between items-start">
                             <div>
                                 <div class="font-semibold" x-text="p.name"></div>
@@ -136,91 +154,240 @@
                             </div>
                             <div class="text-xs text-slate-400 text-right">
                                 <div>go-live: <span class="mono" x-text="p.target_go_live ? p.target_go_live.slice(0,10) : '—'"></span></div>
-                                <div x-show="p.health_score !== null && p.health_score !== undefined">
-                                    health: <span class="mono" x-text="p.health_score"></span>
-                                </div>
+                                <div x-show="p.health_score != null">health: <span class="mono" x-text="p.health_score"></span></div>
                             </div>
                         </div>
                         <div class="grid grid-cols-4 gap-1 mt-2 text-xs">
                             <template x-for="[k,v] in Object.entries(p.entity_counts || {})" :key="k">
                                 <div class="bg-slate-800/50 rounded px-2 py-1">
-                                    <span class="text-slate-400" x-text="k"></span>:
-                                    <span class="mono" x-text="v ?? '—'"></span>
+                                    <span class="text-slate-400" x-text="k"></span>: <span class="mono" x-text="v ?? '—'"></span>
                                 </div>
                             </template>
                         </div>
                     </div>
                 </template>
             </div>
-        </div>
 
-        <!-- Father agent health -->
-        <div class="card p-4">
-            <h2 class="text-sm font-semibold mb-2">
-                Father Agent
-                <span class="pill ml-2" :class="'pill-' + (state.father?.severity || 'unknown')"
-                      x-text="(state.father?.severity || 'unknown').toUpperCase()"></span>
-            </h2>
-
-            <div class="grid grid-cols-3 gap-2 text-center mb-3">
-                <div class="bg-slate-800/50 rounded p-2">
-                    <div class="text-xs text-slate-400">Tasks open</div>
-                    <div class="text-xl mono" x-text="(state.father?.tasks?.open || 0) + (state.father?.tasks?.pending || 0) + (state.father?.tasks?.in_progress || 0)"></div>
+            <!-- Father agent -->
+            <div class="card p-4">
+                <h2 class="text-sm font-semibold mb-2">Father Agent
+                    <span class="pill ml-2" :class="'pill-' + (state.father?.severity || 'unknown')" x-text="(state.father?.severity || '?').toUpperCase()"></span>
+                </h2>
+                <div class="grid grid-cols-3 gap-2 text-center mb-3">
+                    <div class="bg-slate-800/50 rounded p-2">
+                        <div class="text-xs text-slate-400">Tasks open</div>
+                        <div class="text-xl mono" x-text="(state.father?.tasks?.open || 0) + (state.father?.tasks?.pending || 0) + (state.father?.tasks?.in_progress || 0)"></div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded p-2">
+                        <div class="text-xs text-slate-400">Conv. 24h</div>
+                        <div class="text-xl mono" x-text="state.father?.conversations_24h ?? '—'"></div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded p-2">
+                        <div class="text-xs text-slate-400">Failures 24h</div>
+                        <div class="text-xl mono" :class="(state.father?.failures_24h || 0) > 0 ? 'text-red-400' : ''" x-text="state.father?.failures_24h ?? '—'"></div>
+                    </div>
                 </div>
-                <div class="bg-slate-800/50 rounded p-2">
-                    <div class="text-xs text-slate-400">Conv. 24h</div>
-                    <div class="text-xl mono" x-text="state.father?.conversations_24h ?? '—'"></div>
-                </div>
-                <div class="bg-slate-800/50 rounded p-2">
-                    <div class="text-xs text-slate-400">Failures 24h</div>
-                    <div class="text-xl mono" :class="(state.father?.failures_24h || 0) > 0 ? 'text-red-400' : ''"
-                         x-text="state.father?.failures_24h ?? '—'"></div>
-                </div>
-            </div>
-
-            <div x-show="(state.father?.health_checks || []).length">
-                <div class="text-xs text-slate-400 mb-1">Watchdog health checks</div>
-                <table>
-                    <tbody>
+                <div x-show="(state.father?.health_checks || []).length">
+                    <div class="text-xs text-slate-400 mb-1">Watchdog health checks</div>
+                    <table><tbody>
                         <template x-for="c in (state.father?.health_checks || [])" :key="c.component">
                             <tr>
                                 <td class="font-medium" x-text="c.component"></td>
-                                <td>
-                                    <span class="pill" :class="'pill-' + (c.status === 'ok' || c.status === 'healthy' || c.status === 'success' ? 'green' : 'red')"
-                                          x-text="c.status || '—'"></span>
-                                </td>
+                                <td><span class="pill" :class="'pill-' + (c.status === 'ok' || c.status === 'healthy' || c.status === 'success' ? 'green' : 'red')" x-text="c.status || '—'"></span></td>
                                 <td class="mono text-slate-300" x-text="formatTs(c.checked_at)"></td>
                             </tr>
                         </template>
-                    </tbody>
-                </table>
+                    </tbody></table>
+                </div>
+                <div x-show="!(state.father?.health_checks || []).length" class="text-xs text-slate-500 italic">No health_checks recorded yet.</div>
             </div>
-            <div x-show="!(state.father?.health_checks || []).length" class="text-xs text-slate-500 italic">No health_checks recorded yet.</div>
-        </div>
 
-        <!-- Issues panel (full width) -->
-        <div class="card p-4 lg:col-span-2">
-            <h2 class="text-sm font-semibold mb-2">
-                Issues
-                <span class="text-xs font-normal text-slate-400" x-text="'(' + (state.issues?.length || 0) + ')'"></span>
-            </h2>
-            <div x-show="!(state.issues || []).length" class="text-xs text-slate-500 italic">No open issues. 🌿</div>
-            <div class="space-y-2 max-h-80 overflow-y-auto">
-                <template x-for="(i, idx) in (state.issues || [])" :key="idx">
-                    <div class="flex items-start gap-3 text-sm border border-slate-800 rounded p-2">
-                        <span class="pill flex-shrink-0" :class="'pill-' + i.severity" x-text="i.severity"></span>
-                        <div class="flex-1 min-w-0">
-                            <div class="mono text-xs text-slate-400" x-text="i.source"></div>
-                            <div class="text-slate-200 break-words" x-text="i.message"></div>
+            <!-- Issues -->
+            <div class="card p-4 lg:col-span-2">
+                <h2 class="text-sm font-semibold mb-2">Issues <span class="text-xs font-normal text-slate-400" x-text="'(' + (state.issues?.length || 0) + ')'"></span></h2>
+                <div x-show="!(state.issues || []).length" class="text-xs text-slate-500 italic">No open issues.</div>
+                <div class="space-y-2 max-h-80 overflow-y-auto">
+                    <template x-for="(i, idx) in (state.issues || [])" :key="idx">
+                        <div class="flex items-start gap-3 text-sm border border-slate-800 rounded p-2">
+                            <span class="pill flex-shrink-0" :class="'pill-' + i.severity" x-text="i.severity"></span>
+                            <div class="flex-1 min-w-0">
+                                <div class="mono text-xs text-slate-400" x-text="i.source"></div>
+                                <div class="text-slate-200 break-words" x-text="i.message"></div>
+                            </div>
+                            <div class="mono text-xs text-slate-500 whitespace-nowrap" x-text="formatTs(i.at)"></div>
                         </div>
-                        <div class="mono text-xs text-slate-500 whitespace-nowrap" x-text="formatTs(i.at)"></div>
-                    </div>
-                </template>
+                    </template>
+                </div>
             </div>
         </div>
-
     </div>
 
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: Insights (ke_insights — ephemeral)     -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div x-show="tab === 'insights'" x-cloak>
+
+        <!-- Summary bar -->
+        <div class="card p-4 mb-5">
+            <div class="flex items-center justify-between">
+                <h2 class="text-sm font-semibold">
+                    Risk Insights
+                    <span class="text-xs font-normal text-slate-400 ml-1" x-text="'(' + (state.insights || []).length + ' findings)'"></span>
+                </h2>
+                <div class="flex gap-3 text-xs">
+                    <template x-for="sev in ['critical','high','medium']">
+                        <div class="flex items-center gap-1">
+                            <span class="pill" :class="'pill-' + sev" x-text="sev"></span>
+                            <span class="mono" x-text="(state.insights || []).filter(i => i.severity === sev).length"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div class="text-xs text-slate-500 mt-2">
+                Ephemeral analysis — wiped and regenerated from scratch each run. Critical items at top. Confirm findings to promote them to the permanent Risk Register.
+            </div>
+        </div>
+
+        <!-- Insights table -->
+        <div class="card p-4">
+            <div x-show="!(state.insights || []).length" class="text-xs text-slate-500 italic py-4 text-center">No insights generated yet. Run refresh_insights.py to populate.</div>
+            <table x-show="(state.insights || []).length">
+                <thead>
+                    <tr>
+                        <th style="width:50px">#</th>
+                        <th style="width:80px">Severity</th>
+                        <th style="width:130px">Type</th>
+                        <th>Title</th>
+                        <th style="width:80px">Source</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(ins, idx) in (state.insights || [])" :key="ins.id">
+                        <tr @click="expandedInsight === ins.id ? expandedInsight = null : expandedInsight = ins.id" class="cursor-pointer">
+                            <td class="mono text-slate-400" x-text="idx + 1"></td>
+                            <td><span class="pill" :class="'pill-' + ins.severity" x-text="ins.severity"></span></td>
+                            <td class="text-xs text-slate-300" x-text="ins.insight_type"></td>
+                            <td class="font-medium" x-text="ins.title"></td>
+                            <td class="text-xs text-slate-400" x-text="ins.detected_by === 'holistic_analysis' ? 'holistic' : ins.detected_by"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+
+            <!-- Expanded description (shown below table when a row is clicked) -->
+            <template x-for="ins in (state.insights || [])" :key="'detail-' + ins.id">
+                <div x-show="expandedInsight === ins.id" x-cloak
+                     class="border border-slate-700 rounded-md p-4 mt-3 text-sm">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="pill" :class="'pill-' + ins.severity" x-text="ins.severity"></span>
+                        <span class="font-semibold" x-text="ins.title"></span>
+                    </div>
+                    <div class="text-slate-300 whitespace-pre-line" x-text="ins.description"></div>
+                    <div class="text-xs text-slate-500 mt-2" x-text="'Generated: ' + formatTs(ins.created_at)"></div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: Risk Register (permanent)              -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div x-show="tab === 'risk_register'" x-cloak>
+
+        <!-- Summary bar -->
+        <div class="card p-4 mb-5">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+                <h2 class="text-sm font-semibold">
+                    Risk Register
+                    <span class="text-xs font-normal text-slate-400 ml-1" x-text="'(' + (state.risk_register || []).length + ' total)'"></span>
+                </h2>
+                <div class="flex gap-3 text-xs flex-wrap">
+                    <template x-for="st in ['open','mitigated','accepted','false_positive']">
+                        <div class="flex items-center gap-1" x-show="(state.risk_register || []).filter(r => r.status === st).length > 0">
+                            <span class="pill" :class="'pill-' + st" x-text="st.replace('_',' ')"></span>
+                            <span class="mono" x-text="(state.risk_register || []).filter(r => r.status === st).length"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div class="text-xs text-slate-500 mt-2">
+                Permanent record. Items are created once and stay throughout the project lifecycle. Only the status changes over time.
+            </div>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="flex gap-2 mb-4">
+            <button class="px-3 py-1 rounded text-xs"
+                    :class="rrFilter === 'all' ? 'bg-slate-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                    @click="rrFilter = 'all'">All</button>
+            <button class="px-3 py-1 rounded text-xs"
+                    :class="rrFilter === 'open' ? 'bg-red-900/50 text-red-300' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                    @click="rrFilter = 'open'"
+                    x-text="'Open (' + (state.risk_register || []).filter(r => r.status === 'open').length + ')'"></button>
+            <button class="px-3 py-1 rounded text-xs"
+                    :class="rrFilter === 'false_positive' ? 'bg-slate-700 text-slate-300' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                    @click="rrFilter = 'false_positive'"
+                    x-text="'False Positive (' + (state.risk_register || []).filter(r => r.status === 'false_positive').length + ')'"></button>
+            <button class="px-3 py-1 rounded text-xs"
+                    :class="rrFilter === 'mitigated' ? 'bg-green-900/50 text-green-300' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                    @click="rrFilter = 'mitigated'"
+                    x-show="(state.risk_register || []).filter(r => r.status === 'mitigated').length > 0"
+                    x-text="'Mitigated (' + (state.risk_register || []).filter(r => r.status === 'mitigated').length + ')'"></button>
+        </div>
+
+        <!-- Risk register table -->
+        <div class="card p-4">
+            <div x-show="!(state.risk_register || []).length" class="text-xs text-slate-500 italic py-4 text-center">No risks registered.</div>
+            <table x-show="filteredRisks().length">
+                <thead>
+                    <tr>
+                        <th style="width:90px">Code</th>
+                        <th style="width:80px">Status</th>
+                        <th>Title</th>
+                        <th style="width:100px">Category</th>
+                        <th style="width:70px">Impact</th>
+                        <th style="width:80px">Probability</th>
+                        <th style="width:140px">Owner</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="r in filteredRisks()" :key="r.risk_code">
+                        <tr @click="expandedRisk === r.risk_code ? expandedRisk = null : expandedRisk = r.risk_code" class="cursor-pointer">
+                            <td class="mono font-semibold" x-text="r.risk_code"></td>
+                            <td><span class="pill" :class="'pill-' + r.status" x-text="(r.status || '').replace('_',' ')"></span></td>
+                            <td x-text="r.title"></td>
+                            <td class="text-xs text-slate-300" x-text="(r.category || '').replace(/^./, c => c.toUpperCase())"></td>
+                            <td><span class="pill" :class="'pill-' + (r.impact || 'unknown')" x-text="r.impact || '—'"></span></td>
+                            <td class="text-xs text-slate-300" x-text="(r.probability || '—').replace(/^./, c => c.toUpperCase())"></td>
+                            <td class="text-xs text-slate-300" x-text="r.owner || '—'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+
+            <!-- Expanded detail -->
+            <template x-for="r in filteredRisks()" :key="'rr-detail-' + r.risk_code">
+                <div x-show="expandedRisk === r.risk_code" x-cloak
+                     class="border border-slate-700 rounded-md p-4 mt-3 text-sm">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="mono font-bold" x-text="r.risk_code"></span>
+                        <span class="pill" :class="'pill-' + r.status" x-text="(r.status || '').replace('_',' ')"></span>
+                        <span class="pill" :class="'pill-' + (r.impact || 'unknown')" x-text="(r.impact || '?') + ' impact'"></span>
+                    </div>
+                    <div class="font-semibold mb-1" x-text="r.title"></div>
+                    <div class="text-slate-300 text-xs mb-2" x-text="r.mitigation_plan || 'No mitigation plan documented.'"></div>
+                    <div class="flex gap-4 text-xs text-slate-500">
+                        <span x-text="'Owner: ' + (r.owner || '—')"></span>
+                        <span x-text="'Score: ' + (r.risk_score || '—')"></span>
+                        <span x-text="'Raised: ' + formatTs(r.created_at)"></span>
+                        <span x-text="'Updated: ' + formatTs(r.updated_at)"></span>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Footer -->
     <footer class="mt-6 text-center text-xs text-slate-500">
         Polling every {{ refresh_seconds }}s · thresholds warn/crit:
         <span x-text="(state.thresholds?.warn_minutes || '—') + '/' + (state.thresholds?.crit_minutes || '—') + ' min'"></span>
@@ -235,6 +402,10 @@ function dashboard() {
         state: {},
         lastRefresh: null,
         loading: false,
+        tab: 'pipeline',
+        expandedInsight: null,
+        expandedRisk: null,
+        rrFilter: 'open',
         async load() {
             if (this.loading) return;
             this.loading = true;
@@ -250,10 +421,14 @@ function dashboard() {
                 this.loading = false;
             }
         },
+        filteredRisks() {
+            const rr = this.state.risk_register || [];
+            if (this.rrFilter === 'all') return rr;
+            return rr.filter(r => r.status === this.rrFilter);
+        },
         nowAbuDhabi() {
             return new Date().toLocaleTimeString('en-GB', {
-                timeZone: 'Asia/Dubai',
-                hour12: false,
+                timeZone: 'Asia/Dubai', hour12: false,
                 hour: '2-digit', minute: '2-digit', second: '2-digit',
             });
         },
@@ -261,14 +436,11 @@ function dashboard() {
             if (!iso) return '—';
             try {
                 const d = new Date(iso);
-                // Render all sync timestamps in Abu Dhabi time, 24-hour, "YYYY-MM-DD HH:MM:SS"
                 const parts = d.toLocaleString('en-GB', {
-                    timeZone: 'Asia/Dubai',
-                    hour12: false,
+                    timeZone: 'Asia/Dubai', hour12: false,
                     year: 'numeric', month: '2-digit', day: '2-digit',
                     hour: '2-digit', minute: '2-digit', second: '2-digit',
                 });
-                // en-GB gives "DD/MM/YYYY, HH:MM:SS" — reformat to "YYYY-MM-DD HH:MM:SS"
                 const m = parts.match(/(\d{2})\/(\d{2})\/(\d{4}),?\s+(\d{2}):(\d{2}):(\d{2})/);
                 if (m) return `${m[3]}-${m[2]}-${m[1]} ${m[4]}:${m[5]}:${m[6]}`;
                 return parts;
@@ -276,8 +448,8 @@ function dashboard() {
         },
         formatAge(min) {
             if (min === null || min === undefined) return '—';
-            if (min < 1)    return Math.round(min * 60) + 's';
-            if (min < 60)   return Math.round(min) + 'm';
+            if (min < 1) return Math.round(min * 60) + 's';
+            if (min < 60) return Math.round(min) + 'm';
             if (min < 1440) return (min / 60).toFixed(1) + 'h';
             return (min / 1440).toFixed(1) + 'd';
         },
@@ -286,9 +458,9 @@ function dashboard() {
             return n.toLocaleString();
         },
         severityTextClass(sev) {
-            if (sev === 'red')    return 'text-red-400';
+            if (sev === 'red') return 'text-red-400';
             if (sev === 'yellow') return 'text-yellow-400';
-            if (sev === 'green')  return 'text-green-400';
+            if (sev === 'green') return 'text-green-400';
             return 'text-slate-500';
         },
     };

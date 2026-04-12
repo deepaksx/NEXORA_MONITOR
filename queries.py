@@ -329,6 +329,57 @@ def father_health() -> dict:
     return out
 
 
+# ─────────────────────────────────────────────────────────────
+#  Insights (ke_insights — ephemeral, refreshed every run)
+# ─────────────────────────────────────────────────────────────
+
+def insights_list() -> list[dict]:
+    sql = """
+        SELECT id, insight_type, title,
+               LEFT(COALESCE(description,''), 500) AS description,
+               severity, status, detected_by, created_at
+        FROM ke_insights
+        WHERE project_id = 9
+        ORDER BY
+            CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2
+                          WHEN 'medium' THEN 3 ELSE 4 END,
+            insight_type,
+            created_at DESC
+    """
+    rows = _fetch("npm_projects", sql)
+    for r in rows:
+        r["created_at"] = _iso(r.get("created_at"))
+    return rows
+
+
+# ─────────────────────────────────────────────────────────────
+#  Risk Register (permanent — items never deleted)
+# ─────────────────────────────────────────────────────────────
+
+def risk_register_list() -> list[dict]:
+    sql = """
+        SELECT risk_code, title, category, probability, impact,
+               risk_score, owner, status,
+               LEFT(COALESCE(mitigation_plan,''), 300) AS mitigation_plan,
+               raised_by, created_at, updated_at
+        FROM risk_register
+        WHERE project_id = 9
+        ORDER BY
+            CASE status WHEN 'open' THEN 1 WHEN 'mitigated' THEN 2
+                        WHEN 'accepted' THEN 3 WHEN 'false_positive' THEN 4
+                        ELSE 5 END,
+            CASE impact WHEN 'critical' THEN 1 WHEN 'high' THEN 2
+                        WHEN 'medium' THEN 3 WHEN 'low' THEN 4
+                        ELSE 5 END,
+            risk_code
+    """
+    rows = _fetch("npm_projects", sql)
+    for r in rows:
+        r["created_at"] = _iso(r.get("created_at"))
+        r["updated_at"] = _iso(r.get("updated_at"))
+    return rows
+
+
 def _parse_iso(s: str | None) -> datetime | None:
     if not s:
         return None
@@ -517,6 +568,8 @@ def dashboard_state() -> dict:
     freshness = safe("data_freshness",    data_freshness,    [])
     projects  = safe("active_projects",   active_projects,   [])
     father    = safe("father_health",     father_health,     {"severity": "unknown"})
+    insights  = safe("insights_list",     insights_list,     [])
+    risks     = safe("risk_register_list",risk_register_list,[])
 
     pipeline  = pipeline_stages(stages, freshness, projects, father)
     issues_l  = issues(stages, freshness, father)
@@ -532,6 +585,8 @@ def dashboard_state() -> dict:
         "projects": projects,
         "father": father,
         "issues": issues_l,
+        "insights": insights,
+        "risk_register": risks,
         "thresholds": {
             "warn_minutes": FRESHNESS_WARN_MIN,
             "crit_minutes": FRESHNESS_CRIT_MIN,

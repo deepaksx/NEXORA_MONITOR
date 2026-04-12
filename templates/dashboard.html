@@ -272,17 +272,39 @@
                         <th style="width:80px">Severity</th>
                         <th style="width:130px">Type</th>
                         <th>Title</th>
-                        <th style="width:80px">Source</th>
+                        <th style="width:80px">Status</th>
+                        <th style="width:180px">Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     <template x-for="(ins, idx) in (state.insights || [])" :key="ins.id">
-                        <tr @click="expandedInsight === ins.id ? expandedInsight = null : expandedInsight = ins.id" class="cursor-pointer">
+                        <tr>
                             <td class="mono text-slate-400" x-text="idx + 1"></td>
                             <td><span class="pill" :class="'pill-' + ins.severity" x-text="ins.severity"></span></td>
                             <td class="text-xs text-slate-300" x-text="ins.insight_type"></td>
-                            <td class="font-medium" x-text="ins.title"></td>
-                            <td class="text-xs text-slate-400" x-text="ins.detected_by === 'holistic_analysis' ? 'holistic' : ins.detected_by"></td>
+                            <td class="font-medium cursor-pointer" @click="expandedInsight === ins.id ? expandedInsight = null : expandedInsight = ins.id">
+                                <span x-text="ins.title"></span>
+                                <span class="text-slate-500 text-xs ml-1" x-text="expandedInsight === ins.id ? '▲' : '▼'"></span>
+                            </td>
+                            <td>
+                                <span x-show="ins.status === 'promoted'" class="pill pill-green">promoted</span>
+                                <span x-show="ins.status === 'dismissed'" class="pill pill-unknown">dismissed</span>
+                                <span x-show="ins.status === 'open'" class="pill pill-yellow">open</span>
+                            </td>
+                            <td>
+                                <div x-show="ins.status === 'open'" class="flex gap-2">
+                                    <button @click.stop="promoteInsight(ins)"
+                                            class="px-3 py-1 rounded text-xs bg-green-800/50 text-green-300 hover:bg-green-700/50 border border-green-700/50">
+                                        Confirm as Risk
+                                    </button>
+                                    <button @click.stop="dismissInsight(ins)"
+                                            class="px-3 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:text-white border border-slate-700">
+                                        Dismiss
+                                    </button>
+                                </div>
+                                <span x-show="ins.status === 'promoted'" class="mono text-xs text-green-400"
+                                      x-text="ins._risk_code || ''"></span>
+                            </td>
                         </tr>
                     </template>
                 </tbody>
@@ -477,6 +499,43 @@ function dashboard() {
         formatNum(n) {
             if (n === null || n === undefined) return '—';
             return n.toLocaleString();
+        },
+        async promoteInsight(ins) {
+            if (!confirm('Confirm "' + ins.title + '" as a permanent risk?')) return;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/promote_insight', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ insight_id: ins.id, project_id: this.selectedProjectId }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    ins.status = 'promoted';
+                    ins._risk_code = data.risk_code;
+                    // Refresh to update risk register tab count
+                    setTimeout(() => this.load(), 500);
+                } else {
+                    alert('Could not promote: ' + (data.error || 'unknown error'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        },
+        async dismissInsight(ins) {
+            if (!confirm('Dismiss "' + ins.title + '"?')) return;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/dismiss_insight', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ insight_id: ins.id, project_id: this.selectedProjectId }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    ins.status = 'dismissed';
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
         },
         severityTextClass(sev) {
             if (sev === 'red') return 'text-red-400';

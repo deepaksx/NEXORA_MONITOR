@@ -63,6 +63,34 @@ def api_status(project_id: int | None = None):
     return state
 
 
+@app.post("/api/promote_insight")
+def promote_insight(payload: dict):
+    insight_id = payload.get("insight_id")
+    project_id = payload.get("project_id", 9)
+    if not insight_id:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "insight_id required"})
+    try:
+        result = queries.promote_insight(int(insight_id), int(project_id))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+    if not result.get("ok"):
+        return JSONResponse(status_code=409, content=result)
+    return result
+
+
+@app.post("/api/dismiss_insight")
+def dismiss_insight(payload: dict):
+    insight_id = payload.get("insight_id")
+    project_id = payload.get("project_id", 9)
+    if not insight_id:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "insight_id required"})
+    try:
+        result = queries.dismiss_insight(int(insight_id), int(project_id))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+    return result
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}

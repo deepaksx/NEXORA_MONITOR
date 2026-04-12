@@ -389,6 +389,114 @@ def risk_register_list(project_id: int = 9) -> list[dict]:
     return rows
 
 
+# ─────────────────────────────────────────────────────────────
+#  Promote insight → risk register (write operation)
+# ─────────────────────────────────────────────────────────────
+
+INSIGHT_TYPE_TO_CATEGORY = {
+    "risk": "schedule",
+    "conflict": "scope",
+    "process_gap": "scope",
+    "resource_risk": "resource",
+    "governance_gap": "compliance",
+    "recommendation": "scope",
+    "overdue_milestone": "schedule",
+    "overdue_deliverable": "schedule",
+}
+
+
+def promote_insight(insight_id: int, project_id: int = 9) -> dict:
+    """Promote a ke_insight to a permanent risk_register entry."""
+    conn = _conn("npm_projects")
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Read the insight
+        cur.execute(
+            "SELECT * FROM ke_insights WHERE id = %s AND project_id = %s",
+            [insight_id, project_id],
+        )
+        insight = cur.fetchone()
+        if not insight:
+            return {"ok": False, "error": f"Insight {insight_id} not found"}
+
+        # Check if already promoted
+        cur.execute(
+            "SELECT risk_code FROM risk_register WHERE source_insight_id = %s",
+            [insight_id],
+        )
+        existing = cur.fetchone()
+        if existing:
+            return {"ok": False, "error": f"Already promoted as {existing['risk_code']}",
+                    "risk_code": existing["risk_code"]}
+
+        # Get next RISK-NNN code
+        cur.execute(
+            "SELECT COALESCE(MAX(CAST(SUBSTRING(risk_code FROM 6) AS INTEGER)), 0) + 1 "
+            "FROM risk_register WHERE project_id = %s",
+            [project_id],
+        )
+        next_num = cur.fetchone()["coalesce"]
+        risk_code = f"RISK-{next_num:03d}"
+
+        # Map severity to impact
+        sev = (insight.get("severity") or "medium").lower()
+        impact = "high" if sev in ("critical", "high") else "medium"
+
+        # Map insight type to category
+        category = INSIGHT_TYPE_TO_CATEGORY.get(
+            insight.get("insight_type", ""), "scope"
+        )
+
+        # Insert into risk_register
+        wcur = conn.cursor()
+        wcur.execute("""
+            INSERT INTO risk_register
+            (project_id, risk_code, title, description, category,
+             probability, impact, risk_score, owner, status,
+             source_insight_id, raised_by, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s,
+                    'high', %s, %s, 'Project Manager', 'open',
+                    %s, 'deepak', NOW(), NOW())
+        """, [
+            project_id,
+            risk_code,
+            insight["title"],
+            insight.get("description") or "",
+            category,
+            impact,
+            6 if impact == "high" else 4,  # risk_score: high=6, medium=4
+            insight_id,
+        ])
+
+        # Mark insight as promoted
+        wcur.execute(
+            "UPDATE ke_insights SET status = 'promoted' WHERE id = %s",
+            [insight_id],
+        )
+
+        conn.commit()
+        return {"ok": True, "risk_code": risk_code, "title": insight["title"]}
+
+    finally:
+        conn.close()
+
+
+def dismiss_insight(insight_id: int, project_id: int = 9) -> dict:
+    """Dismiss an insight — will not be promoted."""
+    conn = _conn("npm_projects")
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE ke_insights SET status = 'dismissed' WHERE id = %s AND project_id = %s",
+            [insight_id, project_id],
+        )
+        conn.commit()
+        return {"ok": True, "dismissed": cur.rowcount > 0}
+    finally:
+        conn.close()
+
+
 def _parse_iso(s: str | None) -> datetime | None:
     if not s:
         return None

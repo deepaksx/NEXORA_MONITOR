@@ -1068,6 +1068,10 @@ def _placeholder_tasks(project: dict, milestones: list[dict]) -> list[dict]:
             continue
         if isinstance(td, str):
             td = td[:10]
+        elif hasattr(td, "isoformat"):
+            td = td.isoformat()
+        else:
+            td = str(td)
         tasks.append({
             "task_key":         f"ke_milestone_{idx}",
             "parent_key":       None,
@@ -1084,6 +1088,12 @@ def _placeholder_tasks(project: dict, milestones: list[dict]) -> list[dict]:
         })
 
     return tasks
+
+
+def _json_default(o):
+    if hasattr(o, "isoformat"):
+        return o.isoformat()
+    return str(o)
 
 
 def _build_cached_render(plan_row: dict, tasks: list[dict]) -> dict:
@@ -1231,7 +1241,7 @@ def plan_create_placeholder(project_id: int, generated_by: str = "placeholder") 
         cached = _build_cached_render(plan_row, tasks)
         cur.execute(
             "UPDATE project_plans SET cached_render=%s WHERE id=%s",
-            [_json.dumps(cached), plan_row["id"]],
+            [_json.dumps(cached, default=_json_default), plan_row["id"]],
         )
 
         conn.commit()

@@ -626,8 +626,8 @@
                 </div>
 
                 <!-- Document selected: Living Project Plan (Gantt) -->
-                <div x-show="selectedDoc && selectedDoc.doc_type === 'project_plan'"
-                     x-init="$watch('selectedDoc', (d) => { if (d && d.doc_type === 'project_plan') loadPlan(); })"
+                <div x-show="selectedDoc && isProjectPlan(selectedDoc)"
+                     x-init="$watch('selectedDoc', (d) => { if (d && isProjectPlan(d)) loadPlan(); })"
                      class="flex-1 flex flex-col min-h-0">
 
                     <!-- Toolbar -->
@@ -703,7 +703,7 @@
                 </div>
 
                 <!-- Document selected: Generic document view (non-risk-register, non-project-plan) -->
-                <div x-show="selectedDoc && selectedDoc.doc_type !== 'risk_register_doc' && selectedDoc.doc_type !== 'project_plan'" class="flex-1 flex flex-col min-h-0">
+                <div x-show="selectedDoc && selectedDoc.doc_type !== 'risk_register_doc' && !isProjectPlan(selectedDoc)" class="flex-1 flex flex-col min-h-0">
 
                     <!-- Draft / Final tab bar -->
                     <div class="flex items-center justify-between border-b border-slate-700 px-4" style="background: #0d1424;">
@@ -1031,6 +1031,11 @@ function dashboard() {
             this.docRefinePrompt = '';
             this.docVersions = [];
             this.docShowVersions = false;
+            // Fast path: Living Project Plan uses a Gantt, skip the document fetch/versions.
+            if (this.isProjectPlan(doc)) {
+                this.loadPlan();
+                return;
+            }
             try {
                 const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/' + doc.id, { credentials: 'same-origin' });
                 const data = await resp.json();
@@ -1163,6 +1168,13 @@ function dashboard() {
             URL.revokeObjectURL(url);
         },
         // ── Living Project Plan (Gantt) ──
+        isProjectPlan(doc) {
+            if (!doc) return false;
+            const dt = (doc.doc_type || '').toLowerCase();
+            if (dt === 'project_plan' || dt === 'living_project_plan' || dt === 'project_plan_doc' || dt === 'living_plan') return true;
+            const nm = (doc.name || '').toLowerCase();
+            return nm.includes('living project plan') || nm === 'project plan';
+        },
         planStatusPill() {
             if (!this.plan) return 'pill-unknown';
             if (this.plan.status === 'final') return 'pill-green';

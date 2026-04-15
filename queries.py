@@ -432,11 +432,11 @@ def promote_insight(insight_id: int, project_id: int = 9) -> dict:
 
         # Get next RISK-NNN code
         cur.execute(
-            "SELECT COALESCE(MAX(CAST(SUBSTRING(risk_code FROM 6) AS INTEGER)), 0) + 1 "
+            "SELECT COALESCE(MAX(CAST(SUBSTRING(risk_code FROM 6) AS INTEGER)), 0) + 1 AS next_num "
             "FROM risk_register WHERE project_id = %s",
             [project_id],
         )
-        next_num = cur.fetchone()["coalesce"]
+        next_num = cur.fetchone()["next_num"]
         risk_code = f"RISK-{next_num:03d}"
 
         # Map severity to impact
@@ -495,6 +495,262 @@ def dismiss_insight(insight_id: int, project_id: int = 9) -> dict:
         return {"ok": True, "dismissed": cur.rowcount > 0}
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+#  Project Documents
+# ─────────────────────────────────────────────────────────────
+
+def documents_list(project_id: int = 9) -> list[dict]:
+    sql = """
+        SELECT id, name, phase, doc_type, sort_order, status,
+               LENGTH(COALESCE(draft_html,'')) AS draft_len,
+               LENGTH(COALESCE(final_html,'')) AS final_len,
+               updated_at
+        FROM project_documents
+        WHERE project_id = %s
+        ORDER BY
+            CASE phase WHEN 'ongoing' THEN 0 WHEN 'prepare' THEN 1
+                       WHEN 'explore' THEN 2 WHEN 'realize' THEN 3
+                       WHEN 'deploy' THEN 4 WHEN 'run' THEN 5 ELSE 9 END,
+            sort_order, name
+    """
+    rows = _fetch("npm_projects", sql, [project_id])
+    for r in rows:
+        r["updated_at"] = _iso(r.get("updated_at"))
+    return rows
+
+
+def document_get(doc_id: int) -> dict:
+    return _fetch_one("npm_projects", """
+        SELECT id, project_id, name, phase, doc_type, status,
+               draft_html, final_html, updated_at
+        FROM project_documents WHERE id = %s
+    """, [doc_id])
+
+
+def _next_version(cur, doc_id: int, version_type: str) -> int:
+    cur.execute(
+        "SELECT COALESCE(MAX(version), 0) + 1 AS next_ver FROM document_versions "
+        "WHERE document_id = %s AND version_type = %s",
+        [doc_id, version_type],
+    )
+    row = cur.fetchone()
+    # Handle both dict cursor and tuple cursor
+    if isinstance(row, dict):
+        return row["next_ver"]
+    return row[0]
+
+
+def _upload_s3(s3_key: str, html: str, bucket: str = "nxsys-drive"):
+    """Upload HTML content to S3."""
+    import boto3
+    s3 = boto3.client("s3")
+    s3.put_object(
+        Bucket=bucket, Key=s3_key,
+        Body=html.encode("utf-8"),
+        ContentType="text/html",
+    )
+
+
+def _download_s3(s3_key: str, bucket: str = "nxsys-drive") -> str:
+    """Download HTML content from S3."""
+    import boto3
+    s3 = boto3.client("s3")
+    resp = s3.get_object(Bucket=bucket, Key=s3_key)
+    return resp["Body"].read().decode("utf-8")
+
+
+def document_save_draft(doc_id: int, html: str):
+    conn = _conn("npm_projects")
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Get doc metadata for S3 path
+        cur.execute("SELECT project_id, doc_type FROM project_documents WHERE id = %s", [doc_id])
+        doc = cur.fetchone()
+        if not doc:
+            return {"ok": False, "error": "Document not found"}
+
+        # Get next draft version
+        version = _next_version(cur, doc_id, "draft")
+
+        # S3 key: projects/{project_id}/documents/{doc_type}/draft_v{N}.html
+        s3_key = f"projects/{doc['project_id']}/documents/{doc['doc_type']}/draft_v{version}.html"
+
+        # Upload to S3
+        _upload_s3(s3_key, html)
+
+        # Record version in DB
+        cur.execute("""
+            INSERT INTO document_versions (document_id, version, version_type, s3_key)
+            VALUES (%s, %s, 'draft', %s)
+        """, [doc_id, version, s3_key])
+
+        # Update current draft in project_documents
+        cur.execute("""
+            UPDATE project_documents
+            SET draft_html = %s, status = 'draft', updated_at = NOW()
+            WHERE id = %s
+        """, [html, doc_id])
+
+        conn.commit()
+        return {"ok": True, "version": version, "s3_key": s3_key}
+    finally:
+        conn.close()
+
+
+def document_finalize(doc_id: int):
+    conn = _conn("npm_projects")
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Get doc with current draft
+        cur.execute("""
+            SELECT id, project_id, doc_type, draft_html
+            FROM project_documents WHERE id = %s AND draft_html IS NOT NULL AND draft_html != ''
+        """, [doc_id])
+        doc = cur.fetchone()
+        if not doc:
+            return {"ok": False, "error": "No draft to finalize"}
+
+        # Get next final version
+        version = _next_version(cur, doc_id, "final")
+
+        # S3 key
+        s3_key = f"projects/{doc['project_id']}/documents/{doc['doc_type']}/final_v{version}.html"
+
+        # Upload to S3
+        _upload_s3(s3_key, doc["draft_html"])
+
+        # Record version
+        cur.execute("""
+            INSERT INTO document_versions (document_id, version, version_type, s3_key)
+            VALUES (%s, %s, 'final', %s)
+        """, [doc_id, version, s3_key])
+
+        # Update project_documents
+        cur.execute("""
+            UPDATE project_documents
+            SET final_html = draft_html, status = 'final', updated_at = NOW()
+            WHERE id = %s
+        """, [doc_id])
+
+        conn.commit()
+        return {"ok": True, "version": version, "s3_key": s3_key}
+    finally:
+        conn.close()
+
+
+def document_versions(doc_id: int) -> list[dict]:
+    rows = _fetch("npm_projects", """
+        SELECT id, version, version_type, s3_key, created_by, notes, created_at
+        FROM document_versions
+        WHERE document_id = %s
+        ORDER BY version_type, version DESC
+    """, [doc_id])
+    for r in rows:
+        r["created_at"] = _iso(r.get("created_at"))
+    return rows
+
+
+def document_version_html(version_id: int) -> str:
+    row = _fetch_one("npm_projects", """
+        SELECT s3_key, s3_bucket FROM document_versions WHERE id = %s
+    """, [version_id])
+    if not row:
+        raise ValueError("Version not found")
+    return _download_s3(row["s3_key"], row.get("s3_bucket", "nxsys-drive"))
+
+
+# ─────────────────────────────────────────────────────────────
+#  Kick-off presentation data (read-only, multi-DB)
+# ─────────────────────────────────────────────────────────────
+
+def kickoff_project_data(project_id: int) -> dict:
+    """Gather all data needed to generate a kick-off presentation for a project."""
+
+    project = _fetch_one("npm_projects", """
+        SELECT id, name, client, description, phase, status,
+               start_date, target_go_live, methodology, project_code
+        FROM projects WHERE id = %s
+    """, [project_id])
+
+    milestones = _fetch("npm_projects", """
+        SELECT title, phase, target_date, status
+        FROM ke_milestones WHERE project_id = %s
+        ORDER BY target_date
+    """, [project_id])
+    for m in milestones:
+        m["target_date"] = _iso(m.get("target_date"))
+
+    risks = _fetch("npm_projects", """
+        SELECT risk_code, title, category, probability, impact,
+               risk_score, owner, status,
+               LEFT(COALESCE(mitigation_plan,''), 500) AS mitigation_plan
+        FROM risk_register WHERE project_id = %s
+        ORDER BY risk_code
+    """, [project_id])
+
+    resources = _fetch("npm_projects", """
+        SELECT DISTINCT role, workstream, responsibility
+        FROM project_resources WHERE project_id = %s
+        ORDER BY workstream, role
+    """, [project_id])
+
+    systems = _fetch("npm_projects", """
+        SELECT system_role, sap_product, host_url
+        FROM sap_systems WHERE project_id = %s
+        ORDER BY system_role
+    """, [project_id])
+
+    deliverables = _fetch("npm_projects", """
+        SELECT phase, title
+        FROM ke_deliverables WHERE project_id = %s
+        ORDER BY phase
+    """, [project_id])
+
+    # Meeting summaries from nxsys DB (cross-DB query)
+    meetings = []
+    try:
+        project_name = project.get("name", "")
+        keyword = project_name.split("–")[0].split("-")[0].strip() if project_name else ""
+        if keyword and len(keyword) >= 3:
+            meetings = _fetch("nxsys", """
+                SELECT m.title, m.date,
+                       LEFT(COALESCE(mt.summary,''), 800) AS summary,
+                       LEFT(COALESCE(mt.action_items,''), 800) AS action_items
+                FROM meetings m
+                LEFT JOIN meeting_transcripts mt ON mt.meeting_id = m.id
+                WHERE m.title ILIKE %s
+                ORDER BY m.date DESC LIMIT 6
+            """, [f"%{keyword}%"])
+            for mt in meetings:
+                mt["date"] = _iso(mt.get("date"))
+    except Exception:
+        pass
+
+    # Scope/contract memories from agent_brain
+    memories = []
+    try:
+        memories = _fetch("agent_brain", """
+            SELECT content, category FROM memory
+            WHERE content ILIKE %s OR category IN ('scope', 'contract')
+            ORDER BY created_at DESC LIMIT 10
+        """, [f"%{project.get('name', 'xxx').split()[0]}%"])
+    except Exception:
+        pass
+
+    return {
+        "project": project,
+        "milestones": milestones,
+        "risks": risks,
+        "resources": resources,
+        "systems": systems,
+        "deliverables": deliverables,
+        "meetings": meetings,
+        "memories": memories,
+    }
 
 
 def _parse_iso(s: str | None) -> datetime | None:
@@ -718,3 +974,303 @@ def dashboard_state(project_id: int | None = None) -> dict:
         },
         "query_errors": errors,
     }
+
+
+# ─────────────────────────────────────────────────────────────
+#  Living Project Plan (Gantt) — versioned with cached render
+# ─────────────────────────────────────────────────────────────
+
+import json as _json
+from datetime import date as _date, timedelta as _timedelta
+
+
+_SAP_PHASES = [
+    ("discover",  "Discover"),
+    ("prepare",   "Prepare"),
+    ("explore",   "Explore"),
+    ("realize",   "Realize"),
+    ("deploy",    "Deploy"),
+    ("run",       "Run (Hypercare)"),
+]
+
+
+def _distribute_phases(start: _date, end: _date) -> list[dict]:
+    """Split [start, end] into the six SAP Activate phases with plausible weights."""
+    total_days = max((end - start).days, 6)
+    # Weights sum to 1.0; roughly matches SAP Activate proportions.
+    weights = [0.08, 0.12, 0.25, 0.30, 0.15, 0.10]
+    spans = []
+    cursor = start
+    for (key, label), w in zip(_SAP_PHASES, weights):
+        dur = max(int(total_days * w), 1)
+        phase_end = cursor + _timedelta(days=dur - 1)
+        if phase_end > end:
+            phase_end = end
+        spans.append({"key": key, "label": label, "start": cursor, "end": phase_end})
+        cursor = phase_end + _timedelta(days=1)
+        if cursor > end:
+            cursor = end
+    # Ensure the last phase reaches the project end exactly.
+    if spans:
+        spans[-1]["end"] = end
+    return spans
+
+
+def _placeholder_tasks(project: dict, milestones: list[dict]) -> list[dict]:
+    """Build a seed Gantt task list from project dates + SAP phases + ke_milestones."""
+    start = project.get("start_date") or _date.today()
+    end = project.get("target_go_live") or (start + _timedelta(days=180))
+    if isinstance(start, str):
+        start = _date.fromisoformat(start[:10])
+    if isinstance(end, str):
+        end = _date.fromisoformat(end[:10])
+    if end <= start:
+        end = start + _timedelta(days=180)
+
+    tasks: list[dict] = []
+    prev_phase_key = None
+    for span in _distribute_phases(start, end):
+        tasks.append({
+            "task_key":         f"phase_{span['key']}",
+            "parent_key":       None,
+            "name":             span["label"],
+            "sap_phase":        span["key"],
+            "workstream":       None,
+            "owner":            "NXSYS PMO",
+            "start_date":       span["start"].isoformat(),
+            "end_date":         span["end"].isoformat(),
+            "percent_complete": 0,
+            "is_milestone":     False,
+            "depends_on":       [prev_phase_key] if prev_phase_key else [],
+            "source_refs":      {"seed": "placeholder"},
+        })
+        # Phase-gate milestone at end of each phase.
+        tasks.append({
+            "task_key":         f"gate_{span['key']}",
+            "parent_key":       f"phase_{span['key']}",
+            "name":             f"{span['label']} — Phase Gate",
+            "sap_phase":        span["key"],
+            "workstream":       None,
+            "owner":            "Steering Committee",
+            "start_date":       span["end"].isoformat(),
+            "end_date":         span["end"].isoformat(),
+            "percent_complete": 0,
+            "is_milestone":     True,
+            "depends_on":       [f"phase_{span['key']}"],
+            "source_refs":      {"seed": "placeholder"},
+        })
+        prev_phase_key = f"phase_{span['key']}"
+
+    # Merge in any ke_milestones the project already has.
+    for idx, m in enumerate(milestones or []):
+        td = m.get("target_date")
+        if not td:
+            continue
+        if isinstance(td, str):
+            td = td[:10]
+        tasks.append({
+            "task_key":         f"ke_milestone_{idx}",
+            "parent_key":       None,
+            "name":             m.get("title") or f"Milestone {idx+1}",
+            "sap_phase":        (m.get("phase") or "").lower() or None,
+            "workstream":       None,
+            "owner":            None,
+            "start_date":       td,
+            "end_date":         td,
+            "percent_complete": 0,
+            "is_milestone":     True,
+            "depends_on":       [],
+            "source_refs":      {"ke_milestones": True},
+        })
+
+    return tasks
+
+
+def _build_cached_render(plan_row: dict, tasks: list[dict]) -> dict:
+    """Shape the payload the frontend needs — served as-is from cached_render."""
+    return {
+        "plan_id":       plan_row["id"],
+        "project_id":    plan_row["project_id"],
+        "version":       plan_row["version"],
+        "status":        plan_row["status"],
+        "generated_at":  _iso(plan_row.get("generated_at")),
+        "generated_by":  plan_row.get("generated_by"),
+        "source_summary": plan_row.get("source_summary"),
+        "tasks":         tasks,
+    }
+
+
+def plan_get_latest(project_id: int) -> dict | None:
+    """Latest plan for a project (any status), served from cached_render."""
+    row = _fetch_one("npm_projects", """
+        SELECT id, project_id, version, status, generated_at, generated_by,
+               source_summary, cached_render
+        FROM project_plans
+        WHERE project_id = %s
+        ORDER BY version DESC
+        LIMIT 1
+    """, [project_id])
+    if not row:
+        return None
+    cached = row.get("cached_render")
+    if cached:
+        if isinstance(cached, str):
+            cached = _json.loads(cached)
+        return cached
+    # Fallback: rebuild from tasks table if cache missing.
+    tasks = plan_get_tasks(row["id"])
+    return _build_cached_render(row, tasks)
+
+
+def plan_get_version(plan_id: int) -> dict | None:
+    row = _fetch_one("npm_projects", """
+        SELECT id, project_id, version, status, generated_at, generated_by,
+               source_summary, cached_render
+        FROM project_plans WHERE id = %s
+    """, [plan_id])
+    if not row:
+        return None
+    cached = row.get("cached_render")
+    if cached:
+        if isinstance(cached, str):
+            cached = _json.loads(cached)
+        return cached
+    tasks = plan_get_tasks(plan_id)
+    return _build_cached_render(row, tasks)
+
+
+def plan_get_tasks(plan_id: int) -> list[dict]:
+    rows = _fetch("npm_projects", """
+        SELECT task_key, parent_key, name, sap_phase, workstream, owner,
+               start_date, end_date, percent_complete, is_milestone,
+               depends_on, source_refs
+        FROM project_plan_tasks
+        WHERE plan_id = %s
+        ORDER BY start_date, task_key
+    """, [plan_id])
+    for r in rows:
+        r["start_date"] = r["start_date"].isoformat() if r.get("start_date") else None
+        r["end_date"]   = r["end_date"].isoformat() if r.get("end_date") else None
+        r["depends_on"] = list(r.get("depends_on") or [])
+    return rows
+
+
+def plan_list_versions(project_id: int) -> list[dict]:
+    rows = _fetch("npm_projects", """
+        SELECT id, version, status, generated_at, generated_by,
+               source_summary,
+               (SELECT COUNT(*) FROM project_plan_tasks t WHERE t.plan_id = p.id) AS task_count
+        FROM project_plans p
+        WHERE project_id = %s
+        ORDER BY version DESC
+    """, [project_id])
+    for r in rows:
+        r["generated_at"] = _iso(r.get("generated_at"))
+    return rows
+
+
+def plan_create_placeholder(project_id: int, generated_by: str = "placeholder") -> dict:
+    """Create a new draft plan version seeded from project metadata + ke_milestones."""
+    project = _fetch_one("npm_projects", """
+        SELECT id, name, start_date, target_go_live, methodology
+        FROM projects WHERE id = %s
+    """, [project_id])
+    if not project:
+        return {"ok": False, "error": f"project {project_id} not found"}
+
+    milestones = _fetch("npm_projects", """
+        SELECT title, phase, target_date
+        FROM ke_milestones WHERE project_id = %s
+        ORDER BY target_date
+    """, [project_id])
+
+    tasks = _placeholder_tasks(project, milestones)
+
+    conn = _conn("npm_projects")
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Next version number
+        cur.execute(
+            "SELECT COALESCE(MAX(version),0)+1 AS v FROM project_plans WHERE project_id=%s",
+            [project_id],
+        )
+        next_v = cur.fetchone()["v"]
+
+        source_summary = (
+            f"Placeholder v1 seeded from project start {project.get('start_date')} "
+            f"→ go-live {project.get('target_go_live')} "
+            f"across 6 SAP Activate phases + {len(milestones)} ke_milestones."
+        )
+
+        cur.execute("""
+            INSERT INTO project_plans
+                (project_id, version, status, generated_by, source_summary, cached_render)
+            VALUES (%s, %s, 'draft', %s, %s, NULL)
+            RETURNING id, project_id, version, status, generated_at, generated_by, source_summary
+        """, [project_id, next_v, generated_by, source_summary])
+        plan_row = dict(cur.fetchone())
+
+        # Insert tasks
+        for t in tasks:
+            cur.execute("""
+                INSERT INTO project_plan_tasks
+                    (plan_id, task_key, parent_key, name, sap_phase, workstream, owner,
+                     start_date, end_date, percent_complete, is_milestone,
+                     depends_on, source_refs)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, [
+                plan_row["id"], t["task_key"], t["parent_key"], t["name"],
+                t["sap_phase"], t["workstream"], t["owner"],
+                t["start_date"], t["end_date"], t["percent_complete"],
+                t["is_milestone"], t["depends_on"],
+                _json.dumps(t["source_refs"]) if t.get("source_refs") else None,
+            ])
+
+        # Build and store cached_render
+        cached = _build_cached_render(plan_row, tasks)
+        cur.execute(
+            "UPDATE project_plans SET cached_render=%s WHERE id=%s",
+            [_json.dumps(cached), plan_row["id"]],
+        )
+
+        conn.commit()
+        return {"ok": True, "plan_id": plan_row["id"], "version": next_v, "tasks": len(tasks)}
+    finally:
+        conn.close()
+
+
+def plan_approve_final(plan_id: int) -> dict:
+    """Flip a draft to final, supersede any prior final for the same project. Atomic."""
+    conn = _conn("npm_projects")
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT id, project_id, status FROM project_plans WHERE id=%s", [plan_id])
+        row = cur.fetchone()
+        if not row:
+            return {"ok": False, "error": "plan not found"}
+        if row["status"] == "final":
+            return {"ok": True, "already_final": True, "plan_id": plan_id}
+
+        cur.execute("""
+            UPDATE project_plans SET status='superseded'
+            WHERE project_id=%s AND status='final' AND id<>%s
+        """, [row["project_id"], plan_id])
+        cur.execute("UPDATE project_plans SET status='final' WHERE id=%s", [plan_id])
+
+        # Refresh cached_render.status
+        cur.execute("""
+            SELECT id, project_id, version, status, generated_at, generated_by, source_summary
+            FROM project_plans WHERE id=%s
+        """, [plan_id])
+        plan_row = dict(cur.fetchone())
+        tasks = plan_get_tasks(plan_id)
+        cached = _build_cached_render(plan_row, tasks)
+        cur.execute(
+            "UPDATE project_plans SET cached_render=%s WHERE id=%s",
+            [_json.dumps(cached), plan_id],
+        )
+        conn.commit()
+        return {"ok": True, "plan_id": plan_id, "status": "final"}
+    finally:
+        conn.close()

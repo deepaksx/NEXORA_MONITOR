@@ -6,6 +6,9 @@
     <title>Nexora Monitor</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <!-- frappe-gantt for Living Project Plan -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css">
+    <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
     <style>
         body { background: #0b1220; color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
         .card { background: #111a2e; border: 1px solid #1f2a44; border-radius: 12px; }
@@ -46,49 +49,30 @@
     window.NEXORA_BASE = {{ (request.scope.get('root_path') or '') | tojson }};
 </script>
 
-<div class="max-w-7xl mx-auto p-5">
+<div class="w-full">
 
-    <!-- Header -->
-    <header class="flex items-center justify-between mb-4">
-        <div>
-            <h1 class="text-2xl font-bold">Nexora Monitor</h1>
-            <div class="text-xs text-slate-400 mono" x-text="'last refresh: ' + (lastRefresh || '—') + ' (Abu Dhabi)'"></div>
+    <!-- Unified top bar: logo + tabs + project selector + status -->
+    <div class="flex items-center gap-4 border-b border-slate-700 px-4 py-1.5">
+        <div class="flex items-baseline gap-3 flex-shrink-0">
+            <h1 class="text-lg font-bold">Nexora Monitor</h1>
+            <span class="text-[10px] text-slate-500 mono hidden md:inline" x-text="lastRefresh || ''"></span>
         </div>
-        <div class="flex items-center gap-4">
-            <div class="flex items-center gap-2">
-                <span class="dot" :class="'dot-' + (state.overall || 'unknown')"></span>
-                <span class="pill" :class="'pill-' + (state.overall || 'unknown')" x-text="(state.overall || 'loading').toUpperCase()"></span>
-            </div>
-            <button @click="load()" class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">Refresh</button>
+        <div class="flex gap-0 ml-4">
+            <button class="tab-btn py-2" :class="tab === 'pipeline' && 'active'" @click="tab = 'pipeline'">Pipeline</button>
+            <button class="tab-btn py-2" :class="tab === 'documents' && 'active'" @click="tab = 'documents'; loadDocuments()">Documents</button>
         </div>
-    </header>
-
-    <!-- Tab bar + project selector -->
-    <div class="flex items-center justify-between border-b border-slate-700 mb-5">
-        <div class="flex gap-1">
-            <button class="tab-btn" :class="tab === 'pipeline' && 'active'" @click="tab = 'pipeline'">Pipeline</button>
-            <button class="tab-btn" :class="tab === 'insights' && 'active'" @click="tab = 'insights'">
-                Insights
-                <span class="ml-1 text-xs" x-show="(state.insights || []).length"
-                      x-text="'(' + (state.insights || []).length + ')'"></span>
-            </button>
-            <button class="tab-btn" :class="tab === 'risk_register' && 'active'" @click="tab = 'risk_register'">
-                Risk Register
-                <span class="ml-1 text-xs" x-show="(state.risk_register || []).length"
-                      x-text="'(' + (state.risk_register || []).length + ')'"></span>
-            </button>
-        </div>
-        <!-- Project selector (visible on Insights + Risk Register tabs) -->
-        <div x-show="tab === 'insights' || tab === 'risk_register'" class="flex items-center gap-2 pb-2">
-            <label class="text-xs text-slate-400">Project:</label>
+        <div class="flex-1"></div>
+        <div x-show="tab === 'documents'" class="flex items-center gap-2">
             <select x-model="selectedProjectId" @change="load()"
-                    class="bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500">
+                    class="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-blue-500 max-w-xs">
                 <template x-for="p in (state.all_projects || [])" :key="p.id">
-                    <option :value="p.id"
-                            x-text="(p.is_active ? '' : '(inactive) ') + p.name + (p.project_code ? ' [' + p.project_code + ']' : '')">
-                    </option>
+                    <option :value="p.id" x-text="(p.is_active ? '' : '(inactive) ') + p.name"></option>
                 </template>
             </select>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+            <span class="dot" :class="'dot-' + (state.overall || 'unknown')"></span>
+            <button @click="load()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs">↻</button>
         </div>
     </div>
 
@@ -248,13 +232,24 @@
                     Risk Insights
                     <span class="text-xs font-normal text-slate-400 ml-1" x-text="'(' + (state.insights || []).length + ' findings)'"></span>
                 </h2>
-                <div class="flex gap-3 text-xs">
-                    <template x-for="sev in ['critical','high','medium']">
-                        <div class="flex items-center gap-1">
-                            <span class="pill" :class="'pill-' + sev" x-text="sev"></span>
-                            <span class="mono" x-text="(state.insights || []).filter(i => i.severity === sev).length"></span>
-                        </div>
-                    </template>
+                <div class="flex items-center gap-4 text-xs">
+                    <div class="flex gap-3">
+                        <template x-for="sev in ['critical','high','medium']">
+                            <div class="flex items-center gap-1">
+                                <span class="pill" :class="'pill-' + sev" x-text="sev"></span>
+                                <span class="mono" x-text="(state.insights || []).filter(i => i.severity === sev).length"></span>
+                            </div>
+                        </template>
+                    </div>
+                    <button @click="regenerateInsights()"
+                            :disabled="regenerating"
+                            class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors"
+                            :class="regenerating
+                                ? 'bg-amber-900/30 text-amber-400 border border-amber-700/50 cursor-wait'
+                                : 'bg-blue-800/50 text-blue-300 hover:bg-blue-700/50 border border-blue-700/50'">
+                        <span x-show="!regenerating">Regenerate</span>
+                        <span x-show="regenerating">Regenerating...</span>
+                    </button>
                 </div>
             </div>
             <div class="text-xs text-slate-500 mt-2">
@@ -423,8 +418,431 @@
         </div>
     </div>
 
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: Documents                              -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div x-show="tab === 'documents'" x-cloak>
+        <div class="flex gap-0" style="height: calc(100vh - 45px);">
+
+            <!-- LEFT: Document TOC (collapsible) -->
+            <div class="flex-shrink-0 overflow-y-auto border-r border-slate-700 relative transition-all"
+                 :class="docSidebarCollapsed ? 'w-10' : 'w-52'"
+                 style="background: #0d1424;">
+                <!-- Collapse toggle -->
+                <button @click="docSidebarCollapsed = !docSidebarCollapsed"
+                        class="absolute top-2 right-1 z-10 w-6 h-6 rounded hover:bg-slate-700/50 text-slate-400 hover:text-white flex items-center justify-center"
+                        :title="docSidebarCollapsed ? 'Expand' : 'Collapse'">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path x-show="!docSidebarCollapsed" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/>
+                        <path x-show="docSidebarCollapsed" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"/>
+                    </svg>
+                </button>
+                <!-- Collapsed state: just status dots as vertical icons -->
+                <div x-show="docSidebarCollapsed" class="pt-10 pb-2">
+                    <template x-for="doc in docList" :key="doc.id">
+                        <div @click="selectDoc(doc); docSidebarCollapsed = false"
+                             class="px-3 py-2 cursor-pointer flex justify-center transition-colors"
+                             :class="selectedDoc && selectedDoc.id === doc.id ? 'bg-slate-700/50' : 'hover:bg-slate-800/50'"
+                             :title="doc.name">
+                            <span class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                  :class="_isDocGenerating(doc.id) ? 'bg-blue-500 animate-pulse' : doc.status === 'final' ? 'bg-green-500' : doc.status === 'draft' ? 'bg-amber-500' : 'bg-slate-600'"></span>
+                        </div>
+                    </template>
+                </div>
+                <!-- Expanded state: full TOC -->
+                <div x-show="!docSidebarCollapsed" class="pt-8">
+                <template x-for="phase in docPhases()" :key="phase">
+                    <div>
+                        <div @click="collapsedPhases[phase] = !collapsedPhases[phase]"
+                             class="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:bg-slate-800/50 flex items-center justify-between select-none"
+                             :class="phase === 'ongoing' ? 'text-blue-400' : 'text-slate-500'">
+                            <span x-text="phase === 'ongoing' ? 'Ongoing' : phase.charAt(0).toUpperCase() + phase.slice(1) + ' Phase'"></span>
+                            <svg class="w-3 h-3 transition-transform" :class="collapsedPhases[phase] ? '-rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                        <div x-show="!collapsedPhases[phase]">
+                            <template x-for="doc in docsByPhase(phase)" :key="doc.id">
+                                <div @click="selectDoc(doc)"
+                                     class="px-3 py-2 cursor-pointer text-sm transition-colors flex items-center gap-2"
+                                     :class="selectedDoc && selectedDoc.id === doc.id
+                                        ? 'bg-slate-700/50 text-white'
+                                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'">
+                                    <span class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                          :class="_isDocGenerating(doc.id) ? 'bg-blue-500 animate-pulse' : doc.status === 'final' ? 'bg-green-500' : doc.status === 'draft' ? 'bg-amber-500' : 'bg-slate-600'"></span>
+                                    <span x-text="doc.name" class="truncate"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+                <div x-show="!docList.length" class="px-3 py-4 text-xs text-slate-600 italic">No documents. Select a project.</div>
+                </div><!-- /expanded state -->
+            </div>
+
+            <!-- RIGHT: Document Viewer -->
+            <div class="flex-1 flex flex-col min-w-0">
+
+                <!-- No document selected -->
+                <div x-show="!selectedDoc" class="flex-1 flex items-center justify-center text-slate-500 text-sm">
+                    Select a document from the list
+                </div>
+
+                <!-- Document selected: Risk Register special view -->
+                <div x-show="selectedDoc && selectedDoc.doc_type === 'risk_register_doc'" class="flex-1 flex flex-col min-h-0">
+
+                    <!-- Risk Register sub-tabs -->
+                    <div class="flex items-center justify-between border-b border-slate-700 px-4" style="background: #0d1424;">
+                        <div class="flex gap-0">
+                            <button class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+                                    :class="rrDocTab === 'insights' ? 'text-amber-400 border-amber-400' : 'text-slate-500 border-transparent hover:text-slate-300'"
+                                    @click="rrDocTab = 'insights'">
+                                Insights
+                                <span class="ml-1 text-xs" x-show="(state.insights || []).length"
+                                      x-text="'(' + (state.insights || []).length + ')'"></span>
+                            </button>
+                            <button class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+                                    :class="rrDocTab === 'register' ? 'text-red-400 border-red-400' : 'text-slate-500 border-transparent hover:text-slate-300'"
+                                    @click="rrDocTab = 'register'">
+                                Risk Register
+                                <span class="ml-1 text-xs" x-show="(state.risk_register || []).length"
+                                      x-text="'(' + (state.risk_register || []).length + ')'"></span>
+                            </button>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button @click="regenerateInsights()"
+                                    :disabled="regenerating"
+                                    x-show="rrDocTab === 'insights'"
+                                    class="px-3 py-1.5 rounded text-xs font-medium transition-colors"
+                                    :class="regenerating
+                                        ? 'bg-amber-900/30 text-amber-400 border border-amber-700/50 cursor-wait'
+                                        : 'bg-blue-800/50 text-blue-300 hover:bg-blue-700/50 border border-blue-700/50'">
+                                <span x-show="!regenerating">Regenerate</span>
+                                <span x-show="regenerating">Regenerating...</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- INSIGHTS SUB-TAB -->
+                    <div x-show="rrDocTab === 'insights'" class="flex-1 overflow-y-auto p-4">
+                        <div x-show="!(state.insights || []).length" class="text-xs text-slate-500 italic py-4 text-center">No insights generated yet.</div>
+                        <table x-show="(state.insights || []).length">
+                            <thead>
+                                <tr><th style="width:50px">#</th><th style="width:80px">Severity</th><th style="width:130px">Type</th><th>Title</th><th style="width:80px">Status</th><th style="width:180px">Action</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(ins, idx) in (state.insights || [])" :key="ins.id">
+                                    <tr>
+                                        <td class="mono text-slate-400" x-text="idx + 1"></td>
+                                        <td><span class="pill" :class="'pill-' + ins.severity" x-text="ins.severity"></span></td>
+                                        <td class="text-xs text-slate-300" x-text="ins.insight_type"></td>
+                                        <td class="font-medium cursor-pointer" @click="expandedInsight === ins.id ? expandedInsight = null : expandedInsight = ins.id">
+                                            <span x-text="ins.title"></span>
+                                            <span class="text-slate-500 text-xs ml-1" x-text="expandedInsight === ins.id ? '▲' : '▼'"></span>
+                                        </td>
+                                        <td>
+                                            <span x-show="ins.status === 'promoted'" class="pill pill-green">promoted</span>
+                                            <span x-show="ins.status === 'dismissed'" class="pill pill-unknown">dismissed</span>
+                                            <span x-show="ins.status === 'open'" class="pill pill-yellow">open</span>
+                                        </td>
+                                        <td>
+                                            <div x-show="ins.status === 'open'" class="flex gap-2">
+                                                <button @click.stop="promoteInsight(ins)" class="px-3 py-1 rounded text-xs bg-green-800/50 text-green-300 hover:bg-green-700/50 border border-green-700/50">Confirm as Risk</button>
+                                                <button @click.stop="dismissInsight(ins)" class="px-3 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:text-white border border-slate-700">Dismiss</button>
+                                            </div>
+                                            <span x-show="ins.status === 'promoted'" class="mono text-xs text-green-400" x-text="ins._risk_code || ''"></span>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                        <!-- Expanded description -->
+                        <template x-for="ins in (state.insights || [])" :key="'doc-detail-' + ins.id">
+                            <div x-show="expandedInsight === ins.id" x-cloak class="border border-slate-700 rounded-md p-4 mt-3 text-sm">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span class="pill" :class="'pill-' + ins.severity" x-text="ins.severity"></span>
+                                    <span class="font-semibold" x-text="ins.title"></span>
+                                </div>
+                                <div class="text-slate-300 whitespace-pre-line" x-text="ins.description"></div>
+                                <div class="text-xs text-slate-500 mt-2" x-text="'Generated: ' + formatTs(ins.created_at)"></div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- RISK REGISTER SUB-TAB -->
+                    <div x-show="rrDocTab === 'register'" class="flex-1 overflow-y-auto p-4">
+                        <!-- Filter bar -->
+                        <div class="flex gap-2 mb-4">
+                            <button class="px-3 py-1 rounded text-xs"
+                                    :class="rrFilter === 'all' ? 'bg-slate-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                                    @click="rrFilter = 'all'">All</button>
+                            <button class="px-3 py-1 rounded text-xs"
+                                    :class="rrFilter === 'open' ? 'bg-red-900/50 text-red-300' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                                    @click="rrFilter = 'open'"
+                                    x-text="'Open (' + (state.risk_register || []).filter(r => r.status === 'open').length + ')'"></button>
+                            <button class="px-3 py-1 rounded text-xs"
+                                    :class="rrFilter === 'mitigated' ? 'bg-green-900/50 text-green-300' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                                    @click="rrFilter = 'mitigated'"
+                                    x-show="(state.risk_register || []).filter(r => r.status === 'mitigated').length > 0"
+                                    x-text="'Mitigated (' + (state.risk_register || []).filter(r => r.status === 'mitigated').length + ')'"></button>
+                        </div>
+                        <div x-show="!(state.risk_register || []).length" class="text-xs text-slate-500 italic py-4 text-center">No risks registered.</div>
+                        <table x-show="filteredRisks().length">
+                            <thead>
+                                <tr><th style="width:90px">Code</th><th style="width:80px">Status</th><th>Title</th><th style="width:100px">Category</th><th style="width:70px">Impact</th><th style="width:80px">Prob.</th><th style="width:140px">Owner</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="r in filteredRisks()" :key="r.risk_code">
+                                    <tr @click="expandedRisk === r.risk_code ? expandedRisk = null : expandedRisk = r.risk_code" class="cursor-pointer">
+                                        <td class="mono font-semibold" x-text="r.risk_code"></td>
+                                        <td><span class="pill" :class="'pill-' + r.status" x-text="(r.status || '').replace('_',' ')"></span></td>
+                                        <td x-text="r.title"></td>
+                                        <td class="text-xs text-slate-300" x-text="(r.category || '').replace(/^./, c => c.toUpperCase())"></td>
+                                        <td><span class="pill" :class="'pill-' + (r.impact || 'unknown')" x-text="r.impact || '—'"></span></td>
+                                        <td class="text-xs text-slate-300" x-text="(r.probability || '—').replace(/^./, c => c.toUpperCase())"></td>
+                                        <td class="text-xs text-slate-300" x-text="r.owner || '—'"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                        <!-- Expanded detail -->
+                        <template x-for="r in filteredRisks()" :key="'rrdoc-' + r.risk_code">
+                            <div x-show="expandedRisk === r.risk_code" x-cloak class="border border-slate-700 rounded-md p-4 mt-3 text-sm">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span class="mono font-bold" x-text="r.risk_code"></span>
+                                    <span class="pill" :class="'pill-' + r.status" x-text="(r.status || '').replace('_',' ')"></span>
+                                    <span class="pill" :class="'pill-' + (r.impact || 'unknown')" x-text="(r.impact || '?') + ' impact'"></span>
+                                </div>
+                                <div class="font-semibold mb-1" x-text="r.title"></div>
+                                <div class="text-slate-300 text-xs mb-2" x-text="r.mitigation_plan || 'No mitigation plan documented.'"></div>
+                                <div class="flex gap-4 text-xs text-slate-500">
+                                    <span x-text="'Owner: ' + (r.owner || '—')"></span>
+                                    <span x-text="'Score: ' + (r.risk_score || '—')"></span>
+                                    <span x-text="'Raised: ' + formatTs(r.created_at)"></span>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Document selected: Living Project Plan (Gantt) -->
+                <div x-show="selectedDoc && selectedDoc.doc_type === 'project_plan'"
+                     x-init="$watch('selectedDoc', (d) => { if (d && d.doc_type === 'project_plan') loadPlan(); })"
+                     class="flex-1 flex flex-col min-h-0">
+
+                    <!-- Toolbar -->
+                    <div class="flex items-center justify-between border-b border-slate-700 px-4 py-2" style="background: #0d1424;">
+                        <div class="flex items-center gap-3">
+                            <span class="text-sm font-semibold text-slate-200">Living Project Plan</span>
+                            <span class="pill" :class="planStatusPill()" x-text="(plan && plan.status) || 'no plan'"></span>
+                            <span class="text-xs text-slate-500 mono" x-show="plan"
+                                  x-text="'v' + plan.version + ' · ' + formatTs(plan.generated_at)"></span>
+                            <!-- Zoom -->
+                            <div class="flex gap-0 ml-2" x-show="plan">
+                                <button class="px-2 py-1 text-xs border border-slate-700" :class="ganttMode==='Day' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Day')">Day</button>
+                                <button class="px-2 py-1 text-xs border border-slate-700 border-l-0" :class="ganttMode==='Week' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Week')">Week</button>
+                                <button class="px-2 py-1 text-xs border border-slate-700 border-l-0" :class="ganttMode==='Month' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Month')">Month</button>
+                                <button class="px-2 py-1 text-xs border border-slate-700 border-l-0" :class="ganttMode==='Quarter Day' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Quarter Day')">Qtr</button>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button @click="regeneratePlan()" :disabled="planBusy"
+                                    class="px-3 py-1.5 rounded text-xs font-medium bg-blue-800/50 text-blue-300 hover:bg-blue-700/50 border border-blue-700/50 disabled:opacity-40">
+                                <span x-show="!planBusy">Regenerate</span>
+                                <span x-show="planBusy">Working...</span>
+                            </button>
+                            <button @click="planShowVersions = !planShowVersions"
+                                    class="px-3 py-1.5 rounded text-xs font-medium transition-colors"
+                                    :class="planShowVersions ? 'bg-slate-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                                    x-show="planVersions.length > 0">
+                                <span x-text="'Versions (' + planVersions.length + ')'"></span>
+                            </button>
+                            <button x-show="plan && plan.status === 'draft'"
+                                    @click="approvePlan()" :disabled="planBusy"
+                                    class="px-3 py-1.5 rounded text-xs font-medium bg-green-800/40 text-green-300 hover:bg-green-700/40 border border-green-700/40 disabled:opacity-40">
+                                Approve as Final
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Versions panel -->
+                    <div x-show="planShowVersions" class="border-b border-slate-700 px-4 py-3 overflow-y-auto" style="max-height: 180px; background: #0a1018;">
+                        <template x-for="v in planVersions" :key="v.id">
+                            <div @click="loadPlanVersion(v.id)"
+                                 class="flex items-center justify-between px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-slate-700/50 transition-colors mb-1">
+                                <div class="flex items-center gap-3">
+                                    <span class="w-1.5 h-1.5 rounded-full"
+                                          :class="v.status === 'final' ? 'bg-green-500' : (v.status === 'draft' ? 'bg-amber-500' : 'bg-slate-600')"></span>
+                                    <span class="text-slate-300 font-medium" x-text="'v' + v.version"></span>
+                                    <span class="pill" :class="v.status === 'final' ? 'pill-green' : (v.status === 'draft' ? 'pill-yellow' : 'pill-unknown')" x-text="v.status"></span>
+                                    <span class="text-slate-500" x-text="v.task_count + ' tasks'"></span>
+                                    <span class="text-slate-600" x-text="v.generated_by || ''"></span>
+                                </div>
+                                <span class="text-slate-600 mono" x-text="formatTs(v.generated_at)"></span>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Empty state -->
+                    <div x-show="!plan && !planBusy" class="flex-1 flex flex-col items-center justify-center text-slate-500 gap-3">
+                        <span class="text-sm">No project plan yet.</span>
+                        <button @click="regeneratePlan()"
+                                class="px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-500">
+                            Generate Placeholder Plan
+                        </button>
+                    </div>
+
+                    <!-- Gantt container -->
+                    <div x-show="plan" class="flex-1 min-h-0 overflow-auto" style="background: #ffffff;">
+                        <div id="gantt-container" style="min-width: 100%;"></div>
+                    </div>
+
+                    <!-- Source summary footer -->
+                    <div x-show="plan && plan.source_summary" class="border-t border-slate-700 px-4 py-2 text-[11px] text-slate-500"
+                         x-text="'Source: ' + (plan && plan.source_summary)"></div>
+                </div>
+
+                <!-- Document selected: Generic document view (non-risk-register, non-project-plan) -->
+                <div x-show="selectedDoc && selectedDoc.doc_type !== 'risk_register_doc' && selectedDoc.doc_type !== 'project_plan'" class="flex-1 flex flex-col min-h-0">
+
+                    <!-- Draft / Final tab bar -->
+                    <div class="flex items-center justify-between border-b border-slate-700 px-4" style="background: #0d1424;">
+                        <div class="flex gap-0">
+                            <button class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+                                    :class="docTab === 'draft' ? 'text-blue-400 border-blue-400' : 'text-slate-500 border-transparent hover:text-slate-300'"
+                                    @click="docTab = 'draft'">
+                                Draft
+                                <span x-show="selectedDoc && selectedDoc.draft_len > 0" class="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span>
+                            </button>
+                            <button class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+                                    :class="docTab === 'final' ? 'text-green-400 border-green-400' : 'text-slate-500 border-transparent hover:text-slate-300'"
+                                    @click="docTab = 'final'">
+                                Final
+                                <span x-show="selectedDoc && selectedDoc.final_len > 0" class="ml-1 w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>
+                            </button>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <!-- Regenerate button -->
+                            <button x-show="docTab === 'draft'"
+                                    @click="generateDoc()"
+                                    :disabled="_isDocGenerating(selectedDoc && selectedDoc.id)"
+                                    class="px-3 py-1.5 rounded text-xs font-medium bg-blue-800/50 text-blue-300 hover:bg-blue-700/50 border border-blue-700/50">
+                                <span x-show="!_isDocGenerating(selectedDoc && selectedDoc.id)">Regenerate</span>
+                                <span x-show="_isDocGenerating(selectedDoc && selectedDoc.id)">Generating...</span>
+                            </button>
+                            <!-- Version history toggle -->
+                            <button @click="docShowVersions = !docShowVersions"
+                                    class="px-3 py-1.5 rounded text-xs font-medium transition-colors"
+                                    :class="docShowVersions ? 'bg-slate-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                                    x-show="docVersions.length > 0">
+                                <span x-text="'Versions (' + docVersions.length + ')'"></span>
+                            </button>
+                            <!-- Finalize button -->
+                            <button x-show="docTab === 'draft' && docDraftHtml"
+                                    @click="finalizeDoc()"
+                                    class="px-3 py-1.5 rounded text-xs font-medium bg-green-800/40 text-green-300 hover:bg-green-700/40 border border-green-700/40">
+                                Approve as Final
+                            </button>
+                            <!-- Download -->
+                            <button x-show="(docTab === 'draft' && docDraftHtml) || (docTab === 'final' && docFinalHtml)"
+                                    @click="downloadDoc()"
+                                    class="p-1.5 rounded hover:bg-slate-700/50 text-slate-400 hover:text-white">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- VERSION HISTORY PANEL -->
+                    <div x-show="docShowVersions" class="border-b border-slate-700 px-4 py-3 overflow-y-auto" style="max-height: 180px; background: #0a1018;">
+                        <div class="grid grid-cols-2 gap-4">
+                            <!-- Draft versions -->
+                            <div>
+                                <div class="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-2">Draft Versions</div>
+                                <template x-for="v in docVersions.filter(v => v.version_type === 'draft')" :key="v.id">
+                                    <div @click="loadVersion(v)"
+                                         class="flex items-center justify-between px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-slate-700/50 transition-colors mb-1">
+                                        <div class="flex items-center gap-2">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                            <span class="text-slate-300 font-medium" x-text="'v' + v.version"></span>
+                                        </div>
+                                        <span class="text-slate-600 mono" x-text="formatTs(v.created_at)"></span>
+                                    </div>
+                                </template>
+                                <div x-show="!docVersions.filter(v => v.version_type === 'draft').length" class="text-xs text-slate-600 italic">No drafts yet</div>
+                            </div>
+                            <!-- Final versions -->
+                            <div>
+                                <div class="text-[10px] font-bold uppercase tracking-widest text-green-500 mb-2">Final Versions</div>
+                                <template x-for="v in docVersions.filter(v => v.version_type === 'final')" :key="v.id">
+                                    <div @click="loadVersion(v)"
+                                         class="flex items-center justify-between px-3 py-1.5 rounded text-xs cursor-pointer hover:bg-slate-700/50 transition-colors mb-1">
+                                        <div class="flex items-center gap-2">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                                            <span class="text-slate-300 font-medium" x-text="'v' + v.version"></span>
+                                        </div>
+                                        <span class="text-slate-600 mono" x-text="formatTs(v.created_at)"></span>
+                                    </div>
+                                </template>
+                                <div x-show="!docVersions.filter(v => v.version_type === 'final').length" class="text-xs text-slate-600 italic">No finals yet</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- DRAFT TAB -->
+                    <div x-show="docTab === 'draft'" class="flex-1 flex flex-col min-h-0 relative">
+                        <!-- Empty draft state -->
+                        <div x-show="!docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id)"
+                             class="flex-1 flex flex-col items-center justify-center text-slate-500 gap-3">
+                            <span class="text-sm" x-text="'Generate ' + (selectedDoc ? selectedDoc.name : '') + ' draft'"></span>
+                            <button @click="generateDoc()"
+                                    class="px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-500">
+                                Generate Draft
+                            </button>
+                        </div>
+                        <!-- Generating -->
+                        <div x-show="_isDocGenerating(selectedDoc && selectedDoc.id)" class="flex-1 flex flex-col items-center justify-center text-slate-400 gap-3">
+                            <div class="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                            <span class="text-sm">Generating draft...</span>
+                        </div>
+                        <!-- Draft preview -->
+                        <div x-show="docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id)" class="flex-1 min-h-0">
+                            <iframe :srcdoc="docDraftHtml" style="width:100%; height:100%; border:none; background:#fff;"></iframe>
+                        </div>
+                        <!-- Refine bar (floating overlay) -->
+                        <div x-show="docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id)"
+                             class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-600/80 shadow-2xl"
+                             style="background: rgba(17,26,46,0.95); backdrop-filter: blur(12px); width: 90%; max-width: 700px; z-index: 10;">
+                            <input type="text" x-model="docRefinePrompt"
+                                   @keydown.enter="refineDoc()"
+                                   :disabled="_isDocRefining(selectedDoc && selectedDoc.id)"
+                                   placeholder="Refine: e.g. 'add more detail to section 3'..."
+                                   class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50">
+                            <button @click="refineDoc()"
+                                    :disabled="_isDocRefining(selectedDoc && selectedDoc.id) || !docRefinePrompt.trim()"
+                                    class="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-30">
+                                <span x-show="!_isDocRefining(selectedDoc && selectedDoc.id)">Send</span>
+                                <span x-show="_isDocRefining(selectedDoc && selectedDoc.id)" class="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- FINAL TAB -->
+                    <div x-show="docTab === 'final'" class="flex-1 flex flex-col min-h-0">
+                        <div x-show="!docFinalHtml"
+                             class="flex-1 flex items-center justify-center text-slate-500 text-sm">
+                            No final version yet. Generate a draft and approve it.
+                        </div>
+                        <div x-show="docFinalHtml" class="flex-1 min-h-0">
+                            <iframe :srcdoc="docFinalHtml" style="width:100%; height:100%; border:none; background:#fff;"></iframe>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Footer -->
-    <footer class="mt-6 text-center text-xs text-slate-500">
+    <footer x-show="tab !== 'documents'" class="mt-6 text-center text-xs text-slate-500">
         Polling every {{ refresh_seconds }}s · thresholds warn/crit:
         <span x-text="(state.thresholds?.warn_minutes || '—') + '/' + (state.thresholds?.crit_minutes || '—') + ' min'"></span>
         <span x-show="(state.query_errors || []).length" class="text-red-400 ml-2"
@@ -438,13 +856,36 @@ function dashboard() {
         state: {},
         lastRefresh: null,
         loading: false,
+        regenerating: false,
         tab: 'pipeline',
         selectedProjectId: null,
         expandedInsight: null,
         expandedRisk: null,
         rrFilter: 'open',
+        // Documents state
+        docList: [],
+        selectedDoc: null,
+        docTab: 'draft',
+        docDraftHtml: null,
+        docFinalHtml: null,
+        docGeneratingIds: {},  // { docId: jobId, ... }
+        docRefiningIds: {},   // { docId: jobId, ... }
+        docRefinePrompt: '',
+        docVersions: [],
+        docShowVersions: false,
+        // Living Project Plan (Gantt) state
+        plan: null,
+        planVersions: [],
+        planShowVersions: false,
+        planBusy: false,
+        ganttInstance: null,
+        ganttMode: 'Week',
+        rrDocTab: 'insights',
+        docSidebarCollapsed: false,
+        collapsedPhases: {},
         async load() {
             if (this.loading) return;
+            if (Object.keys(this.docGeneratingIds).length || Object.keys(this.docRefiningIds).length) return;
             this.loading = true;
             try {
                 let url = (window.NEXORA_BASE || '') + '/api/status';
@@ -521,6 +962,28 @@ function dashboard() {
                 alert('Error: ' + e.message);
             }
         },
+        async regenerateInsights() {
+            if (this.regenerating) return;
+            if (!confirm('Regenerate all insights? This wipes unreviewed findings and runs a fresh analysis (~60s).')) return;
+            this.regenerating = true;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/regenerate_insights', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: this.selectedProjectId }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    await this.load();
+                } else {
+                    alert('Regeneration failed: ' + (data.error || 'unknown error'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                this.regenerating = false;
+            }
+        },
         async dismissInsight(ins) {
             if (!confirm('Dismiss "' + ins.title + '"?')) return;
             try {
@@ -535,6 +998,267 @@ function dashboard() {
                 }
             } catch (e) {
                 alert('Error: ' + e.message);
+            }
+        },
+        // ── Document methods ──
+        async loadDocuments() {
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents?project_id=' + (this.selectedProjectId || 9), { credentials: 'same-origin' });
+                const data = await resp.json();
+                if (data.ok) this.docList = data.documents || [];
+            } catch (e) { console.error('loadDocuments:', e); }
+        },
+        docPhases() {
+            const order = ['ongoing', 'prepare', 'explore', 'realize', 'deploy', 'run'];
+            const seen = [];
+            for (const d of this.docList) {
+                if (!seen.includes(d.phase)) seen.push(d.phase);
+            }
+            seen.sort((a, b) => {
+                const ai = order.indexOf(a), bi = order.indexOf(b);
+                return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+            });
+            return seen;
+        },
+        docsByPhase(phase) {
+            return this.docList.filter(d => d.phase === phase);
+        },
+        async selectDoc(doc) {
+            this.selectedDoc = doc;
+            this.docDraftHtml = null;
+            this.docFinalHtml = null;
+            this.docTab = 'draft';
+            this.docRefinePrompt = '';
+            this.docVersions = [];
+            this.docShowVersions = false;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/' + doc.id, { credentials: 'same-origin' });
+                const data = await resp.json();
+                if (data.ok && data.document) {
+                    this.docDraftHtml = data.document.draft_html || null;
+                    this.docFinalHtml = data.document.final_html || null;
+                }
+            } catch (e) { console.error('selectDoc:', e); }
+            this.loadVersions();
+        },
+        async loadVersions() {
+            if (!this.selectedDoc) return;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/' + this.selectedDoc.id + '/versions', { credentials: 'same-origin' });
+                const data = await resp.json();
+                if (data.ok) this.docVersions = data.versions || [];
+            } catch (e) { console.error('loadVersions:', e); }
+        },
+        async loadVersion(ver) {
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/versions/' + ver.id + '/html', { credentials: 'same-origin' });
+                const data = await resp.json();
+                if (data.ok && data.html) {
+                    if (ver.version_type === 'draft') { this.docDraftHtml = data.html; this.docTab = 'draft'; }
+                    else { this.docFinalHtml = data.html; this.docTab = 'final'; }
+                }
+            } catch (e) { alert('Error loading version: ' + e.message); }
+        },
+        _isDocGenerating(docId) { return !!this.docGeneratingIds[docId]; },
+        _isDocRefining(docId) { return !!this.docRefiningIds[docId]; },
+        async generateDoc() {
+            if (!this.selectedDoc || this._isDocGenerating(this.selectedDoc.id)) return;
+            this.docGeneratingIds[this.selectedDoc.id] = true;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/generate', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: this.selectedDoc.id, project_id: this.selectedProjectId }),
+                });
+                const data = await resp.json();
+                if (data.ok && data.job_id) {
+                    this._pollJob(data.job_id, this.selectedDoc.id, false);
+                } else {
+                    alert('Generation failed: ' + (data.error || 'unknown'));
+                    delete this.docGeneratingIds[this.selectedDoc.id];
+                }
+            } catch (e) { alert('Error: ' + e.message); if (this.selectedDoc) delete this.docGeneratingIds[this.selectedDoc.id]; }
+        },
+        async refineDoc() {
+            if (!this.selectedDoc || this._isDocRefining(this.selectedDoc.id) || !this.docRefinePrompt.trim()) return;
+            this.docRefiningIds[this.selectedDoc.id] = true;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/refine', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        doc_id: this.selectedDoc.id,
+                        prompt: this.docRefinePrompt.trim(),
+                        project_id: this.selectedProjectId,
+                        html: this.docDraftHtml,
+                    }),
+                });
+                const data = await resp.json();
+                if (data.ok && data.job_id) {
+                    this._pollJob(data.job_id, this.selectedDoc.id, true);
+                } else {
+                    alert('Refinement failed: ' + (data.error || 'unknown'));
+                    delete this.docRefiningIds[this.selectedDoc.id];
+                }
+            } catch (e) { alert('Error: ' + e.message); if (this.selectedDoc) delete this.docRefiningIds[this.selectedDoc.id]; }
+        },
+        async _pollJob(jobId, docId, isRefine = false) {
+            const self = this;
+            const poll = async () => {
+                try {
+                    const resp = await fetch((window.NEXORA_BASE || '') + '/api/jobs/' + jobId, { credentials: 'same-origin' });
+                    const data = await resp.json();
+                    if (data.status === 'done') {
+                        if (isRefine) { delete self.docRefiningIds[docId]; self.docRefinePrompt = ''; }
+                        else { delete self.docGeneratingIds[docId]; }
+                        // If this doc is still selected, reload it
+                        if (self.selectedDoc && self.selectedDoc.id === docId) {
+                            await self.selectDoc(self.selectedDoc);
+                            self.loadVersions();
+                        }
+                        return;
+                    }
+                    if (data.status === 'error') {
+                        if (isRefine) delete self.docRefiningIds[docId];
+                        else delete self.docGeneratingIds[docId];
+                        alert((isRefine ? 'Refinement' : 'Generation') + ' failed: ' + (data.error || 'unknown'));
+                        return;
+                    }
+                    setTimeout(poll, 3000);
+                } catch (e) {
+                    setTimeout(poll, 5000);
+                }
+            };
+            setTimeout(poll, 3000);
+        },
+        async finalizeDoc() {
+            if (!this.selectedDoc || !this.docDraftHtml) return;
+            if (!confirm('Approve "' + this.selectedDoc.name + '" as final? This copies the current draft to the final version.')) return;
+            try {
+                const resp = await fetch((window.NEXORA_BASE || '') + '/api/documents/finalize', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: this.selectedDoc.id }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    this.docFinalHtml = this.docDraftHtml;
+                    this.selectedDoc.final_len = this.docDraftHtml.length;
+                    this.selectedDoc.status = 'final';
+                    this.loadVersions();
+                } else {
+                    alert('Finalize failed: ' + (data.error || 'unknown'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        },
+        downloadDoc() {
+            const html = this.docTab === 'final' ? this.docFinalHtml : this.docDraftHtml;
+            if (!html || !this.selectedDoc) return;
+            const blob = new Blob([html], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = (this.selectedDoc.name || 'document').replace(/[^a-zA-Z0-9_-]/g, '_') + '_' + this.docTab + '.html';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        },
+        // ── Living Project Plan (Gantt) ──
+        planStatusPill() {
+            if (!this.plan) return 'pill-unknown';
+            if (this.plan.status === 'final') return 'pill-green';
+            if (this.plan.status === 'draft') return 'pill-yellow';
+            if (this.plan.status === 'superseded') return 'pill-unknown';
+            return 'pill-unknown';
+        },
+        async loadPlan() {
+            const pid = this.selectedProjectId || 9;
+            this.plan = null;
+            this.planVersions = [];
+            this.planShowVersions = false;
+            try {
+                const [planResp, versResp] = await Promise.all([
+                    fetch((window.NEXORA_BASE || '') + '/api/projects/' + pid + '/plan'),
+                    fetch((window.NEXORA_BASE || '') + '/api/projects/' + pid + '/plan/versions'),
+                ]);
+                const planData = await planResp.json();
+                const versData = await versResp.json();
+                if (planData.ok) this.plan = planData.plan;
+                if (versData.ok) this.planVersions = versData.versions || [];
+            } catch (e) { console.error('loadPlan:', e); }
+            this.$nextTick(() => this.renderGantt());
+        },
+        async loadPlanVersion(planId) {
+            try {
+                const pid = this.selectedProjectId || 9;
+                const r = await fetch((window.NEXORA_BASE || '') + '/api/projects/' + pid + '/plan?version=' + planId);
+                const d = await r.json();
+                if (d.ok) {
+                    this.plan = d.plan;
+                    this.$nextTick(() => this.renderGantt());
+                }
+            } catch (e) { alert('Load version failed: ' + e.message); }
+        },
+        async regeneratePlan() {
+            if (this.planBusy) return;
+            const pid = this.selectedProjectId || 9;
+            this.planBusy = true;
+            try {
+                const r = await fetch((window.NEXORA_BASE || '') + '/api/projects/' + pid + '/plan/regenerate', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+                });
+                const d = await r.json();
+                if (!d.ok) { alert('Regenerate failed: ' + (d.error || 'unknown')); return; }
+                await this.loadPlan();
+            } catch (e) { alert('Error: ' + e.message); }
+            finally { this.planBusy = false; }
+        },
+        async approvePlan() {
+            if (!this.plan || this.planBusy) return;
+            if (!confirm('Approve v' + this.plan.version + ' as final? Any previous final is superseded.')) return;
+            const pid = this.selectedProjectId || 9;
+            this.planBusy = true;
+            try {
+                const r = await fetch((window.NEXORA_BASE || '') + '/api/projects/' + pid + '/plan/' + this.plan.plan_id + '/approve', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+                });
+                const d = await r.json();
+                if (!d.ok) { alert('Approve failed: ' + (d.error || 'unknown')); return; }
+                await this.loadPlan();
+            } catch (e) { alert('Error: ' + e.message); }
+            finally { this.planBusy = false; }
+        },
+        renderGantt() {
+            const el = document.getElementById('gantt-container');
+            if (!el || !this.plan || !window.Gantt) return;
+            el.innerHTML = '';
+            const tasks = (this.plan.tasks || []).map(t => ({
+                id:          t.task_key,
+                name:        t.name + (t.owner ? ' — ' + t.owner : ''),
+                start:       t.start_date,
+                end:         t.end_date,
+                progress:    Number(t.percent_complete) || 0,
+                dependencies: (t.depends_on || []).join(','),
+                custom_class: t.is_milestone ? 'bar-milestone' : ('bar-' + (t.sap_phase || 'default')),
+            }));
+            if (!tasks.length) { el.innerHTML = '<div class="p-8 text-slate-500 text-sm">Plan has no tasks.</div>'; return; }
+            try {
+                this.ganttInstance = new Gantt('#gantt-container', tasks, {
+                    view_mode: this.ganttMode,
+                    bar_height: 22,
+                    padding: 16,
+                    language: 'en',
+                });
+            } catch (e) {
+                console.error('Gantt render:', e);
+                el.innerHTML = '<div class="p-4 text-red-400 text-sm">Gantt render failed: ' + e.message + '</div>';
+            }
+        },
+        setGanttMode(mode) {
+            this.ganttMode = mode;
+            if (this.ganttInstance && this.ganttInstance.change_view_mode) {
+                try { this.ganttInstance.change_view_mode(mode); } catch (_) { this.renderGantt(); }
+            } else {
+                this.renderGantt();
             }
         },
         severityTextClass(sev) {

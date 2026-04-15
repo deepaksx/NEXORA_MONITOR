@@ -84,14 +84,21 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app = FastAPI(title="Nexora Monitor", version="0.2.0")
 
 
+_BUILD_ID = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or "local"
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     try:
-        return templates.TemplateResponse(
+        resp = templates.TemplateResponse(
             request,
             "dashboard.html",
-            {"refresh_seconds": REFRESH_SECONDS},
+            {"refresh_seconds": REFRESH_SECONDS, "build_id": _BUILD_ID},
         )
+        # Defeat proxy/browser caching so new builds always land immediately.
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
     except Exception as e:  # noqa: BLE001
         # Fall back to a plain-text error so we see the problem in the browser
         # instead of a silent 404/500 from an upstream proxy.

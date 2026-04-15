@@ -56,6 +56,7 @@
         <div class="flex items-baseline gap-3 flex-shrink-0">
             <h1 class="text-lg font-bold">Nexora Monitor</h1>
             <span class="text-[10px] text-slate-500 mono hidden md:inline" x-text="lastRefresh || ''"></span>
+            <span class="text-[10px] text-amber-400 mono" title="deployed build">build {{ build_id or 'dev' }}</span>
         </div>
         <div class="flex gap-0 ml-4">
             <button class="tab-btn py-2" :class="tab === 'pipeline' && 'active'" @click="tab = 'pipeline'">Pipeline</button>

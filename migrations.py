@@ -56,7 +56,45 @@ _DDL = [
 ]
 
 
+_DDL_BRAIN = [
+    """
+    CREATE TABLE IF NOT EXISTS monitor_users (
+        id            SERIAL PRIMARY KEY,
+        username      TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role          TEXT NOT NULL CHECK (role IN ('admin','user')),
+        permissions   JSONB NOT NULL DEFAULT '[]',
+        is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+        must_reset    BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_login_at TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_monitor_users_active ON monitor_users(is_active)",
+]
+
+
+def _seed_admin(cur):
+    """Seed a single admin if the table is empty. Idempotent."""
+    import os, bcrypt
+    cur.execute("SELECT COUNT(*) FROM monitor_users")
+    row = cur.fetchone()
+    count = row[0] if isinstance(row, (tuple, list)) else row.get("count")
+    if count and int(count) > 0:
+        return
+    username = os.environ.get("MONITOR_ADMIN_USERNAME", "deepak")
+    password = os.environ.get("MONITOR_ADMIN_PASSWORD", "ChangeMe!2026")
+    h = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode()
+    cur.execute(
+        "INSERT INTO monitor_users (username, password_hash, role, permissions, must_reset) "
+        "VALUES (%s, %s, 'admin', '[]'::jsonb, TRUE)",
+        [username, h],
+    )
+    log.info("migrations: seeded initial admin user '%s' (must reset on first login)", username)
+
+
 def run():
+    # Plans schema in npm_projects
     conn = queries._conn("npm_projects")
     try:
         with conn.cursor() as cur:
@@ -64,5 +102,17 @@ def run():
                 cur.execute(stmt)
         conn.commit()
         log.info("migrations: project_plans schema ensured")
+    finally:
+        conn.close()
+
+    # Users schema in agent_brain
+    conn = queries._conn("agent_brain")
+    try:
+        with conn.cursor() as cur:
+            for stmt in _DDL_BRAIN:
+                cur.execute(stmt)
+            _seed_admin(cur)
+        conn.commit()
+        log.info("migrations: monitor_users schema ensured")
     finally:
         conn.close()

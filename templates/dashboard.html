@@ -44,7 +44,7 @@
         .desc-cell { max-width: 400px; white-space: normal; word-break: break-word; line-height: 1.4; }
     </style>
 </head>
-<body x-data="dashboard()" x-init="load(); setInterval(load, {{ refresh_seconds * 1000 }})">
+<body x-data="dashboard()" x-init="boot({{ refresh_seconds }})">
 <script>
     window.NEXORA_BASE = {{ (request.scope.get('root_path') or '') | tojson }};
 </script>
@@ -59,8 +59,9 @@
             <span class="text-[10px] text-amber-400 mono" title="deployed build">build {{ build_id or 'dev' }}</span>
         </div>
         <div class="flex gap-0 ml-4">
-            <button class="tab-btn py-2" :class="tab === 'pipeline' && 'active'" @click="tab = 'pipeline'">Pipeline</button>
-            <button class="tab-btn py-2" :class="tab === 'documents' && 'active'" @click="tab = 'documents'; loadDocuments()">Documents</button>
+            <button class="tab-btn py-2" :class="tab === 'pipeline' && 'active'" @click="tab = 'pipeline'" x-show="can('pipeline')">Pipeline</button>
+            <button class="tab-btn py-2" :class="tab === 'documents' && 'active'" @click="tab = 'documents'; loadDocuments()" x-show="can('documents')">Documents</button>
+            <button class="tab-btn py-2" :class="tab === 'users' && 'active'" @click="tab = 'users'; loadUsers()" x-show="can('users_admin')">Users & Access</button>
         </div>
         <div class="flex-1"></div>
         <div x-show="tab === 'documents'" class="flex items-center gap-2">
@@ -74,13 +75,42 @@
         <div class="flex items-center gap-2 flex-shrink-0">
             <span class="dot" :class="'dot-' + (state.overall || 'unknown')"></span>
             <button @click="load()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs">↻</button>
+            <!-- Current user badge + logout -->
+            <div x-show="me" class="flex items-center gap-2 ml-2 pl-3 border-l border-slate-700">
+                <span class="text-xs text-slate-300" x-text="me && me.username"></span>
+                <span class="pill" :class="me && me.role === 'admin' ? 'pill-green' : 'pill-unknown'"
+                      x-text="me && me.role"></span>
+                <form method="post" :action="(window.NEXORA_BASE || '') + '/logout'" class="inline">
+                    <button type="submit" class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700/50">Sign out</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- First-login password reset overlay -->
+    <div x-show="me && me.must_reset" x-cloak
+         class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center">
+        <div class="card p-6 w-full max-w-sm">
+            <h2 class="text-lg font-bold mb-1">Set a new password</h2>
+            <p class="text-xs text-slate-400 mb-4">Your account requires a password reset before you can continue.</p>
+            <input type="password" x-model="newPw1" placeholder="New password"
+                   class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-2">
+            <input type="password" x-model="newPw2" placeholder="Confirm password"
+                   @keydown.enter="submitPasswordReset()"
+                   class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3">
+            <div x-show="pwError" class="text-xs text-red-400 mb-2" x-text="pwError"></div>
+            <button @click="submitPasswordReset()" :disabled="pwBusy"
+                    class="w-full py-2 rounded bg-blue-600 text-white font-semibold hover:bg-blue-500 disabled:opacity-40">
+                <span x-show="!pwBusy">Update password</span>
+                <span x-show="pwBusy">Saving…</span>
+            </button>
         </div>
     </div>
 
     <!-- ═══════════════════════════════════════════ -->
     <!-- TAB: Pipeline (existing dashboard content)  -->
     <!-- ═══════════════════════════════════════════ -->
-    <div x-show="tab === 'pipeline'" x-cloak>
+    <div x-show="tab === 'pipeline' && can('pipeline')" x-cloak>
 
         <!-- Pipeline flow strip -->
         <div class="card p-4 mb-5">
@@ -420,9 +450,178 @@
     </div>
 
     <!-- ═══════════════════════════════════════════ -->
+    <!-- TAB: Users & Access (admin only)            -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div x-show="tab === 'users' && can('users_admin')" x-cloak class="p-5">
+
+        <!-- ── LIST VIEW ── -->
+        <div x-show="!userEditor.open">
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <h2 class="text-lg font-bold">Users & Access</h2>
+                <p class="text-xs text-slate-500">Manage who can sign in and which areas of the app they see.</p>
+            </div>
+            <button @click="openNewUser()" class="px-3 py-1.5 rounded bg-blue-600 text-white text-sm font-semibold hover:bg-blue-500">+ New user</button>
+        </div>
+
+        <!-- User list -->
+        <div class="card overflow-hidden">
+            <table class="w-full">
+                <thead>
+                    <tr class="bg-slate-900/60">
+                        <th>Username</th><th>Role</th><th>Permissions</th><th>Active</th><th>Last login</th><th class="w-48">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="u in users" :key="u.id">
+                        <tr :class="!u.is_active ? 'opacity-50' : ''">
+                            <td class="font-medium" x-text="u.username"></td>
+                            <td><span class="pill" :class="u.role === 'admin' ? 'pill-green' : 'pill-unknown'" x-text="u.role"></span></td>
+                            <td class="text-xs text-slate-400" x-text="u.role === 'admin' ? 'all areas (admin)' : permsHuman(u.permissions)"></td>
+                            <td><span class="pill" :class="u.is_active ? 'pill-green' : 'pill-unknown'" x-text="u.is_active ? 'active' : 'inactive'"></span></td>
+                            <td class="mono text-xs text-slate-500" x-text="u.last_login_at ? formatTs(u.last_login_at) : 'never'"></td>
+                            <td>
+                                <button @click="openEditUser(u)" class="text-xs text-blue-400 hover:text-blue-300">Edit</button>
+                                <button @click="toggleActive(u)" class="text-xs text-slate-400 hover:text-white ml-3" x-text="u.is_active ? 'Deactivate' : 'Reactivate'"></button>
+                                <button @click="resetUserPw(u)" class="text-xs text-amber-400 hover:text-amber-300 ml-3">Reset pw</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        </div><!-- /LIST VIEW -->
+
+        <!-- ── EDITOR VIEW (full-page, two-column) ── -->
+        <div x-show="userEditor.open" x-cloak>
+            <!-- Sticky header bar -->
+            <div class="flex items-center justify-between mb-4 sticky top-0 z-10 py-2" style="background:#0b1220;">
+                <div class="flex items-center gap-3">
+                    <button @click="closeEditor()" class="px-2 py-1 rounded hover:bg-slate-700/50 text-slate-400 hover:text-white" title="Back">←</button>
+                    <div>
+                        <h2 class="text-lg font-bold" x-text="userEditor.mode === 'create' ? 'New user' : 'Edit user: ' + userEditor.username"></h2>
+                        <p class="text-xs text-slate-500">Choose role and exactly which areas / documents this user can access.</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span x-show="userEditor.error" class="text-xs text-red-400" x-text="userEditor.error"></span>
+                    <button @click="closeEditor()" class="px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-sm">Cancel</button>
+                    <button @click="saveUser()" class="px-3 py-1.5 rounded bg-blue-600 text-white text-sm font-semibold hover:bg-blue-500">Save</button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-12 gap-4">
+                <!-- LEFT: identity + role + area permissions -->
+                <div class="col-span-5 space-y-4">
+                    <!-- Identity -->
+                    <div class="card p-4">
+                        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-3">Identity</div>
+                        <div x-show="userEditor.mode === 'create'" class="mb-3">
+                            <label class="block text-[10px] uppercase tracking-widest text-slate-400 mb-1">Username</label>
+                            <input x-model="userEditor.username" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                        </div>
+                        <div x-show="userEditor.mode === 'create'" class="mb-3">
+                            <label class="block text-[10px] uppercase tracking-widest text-slate-400 mb-1">Initial password</label>
+                            <input type="password" x-model="userEditor.password" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm" placeholder="user must reset on first login">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] uppercase tracking-widest text-slate-400 mb-1">Role</label>
+                            <select x-model="userEditor.role" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm">
+                                <option value="user">user (limited by permissions)</option>
+                                <option value="admin">admin (everything)</option>
+                            </select>
+                            <p x-show="userEditor.role === 'admin'" class="text-[11px] text-amber-400 mt-2">Admins bypass all permission checks. The areas below are ignored.</p>
+                        </div>
+                    </div>
+
+                    <!-- Area permissions (everything except per-doc) -->
+                    <div class="card p-4 space-y-4" x-show="userEditor.role === 'user'">
+                        <template x-for="grp in permissionGroups" :key="grp.title">
+                            <div>
+                                <div class="text-xs font-semibold text-slate-200 mb-2" x-text="grp.title"></div>
+                                <div class="space-y-1">
+                                    <template x-for="opt in grp.options" :key="opt.key">
+                                        <label class="flex items-start gap-2 text-xs cursor-pointer hover:bg-slate-800/40 px-2 py-1.5 rounded">
+                                            <input type="checkbox" :value="opt.key" class="mt-0.5"
+                                                   :checked="userEditor.permissions.includes(opt.key)"
+                                                   @change="togglePerm(opt.key)">
+                                            <div>
+                                                <div class="text-slate-200" x-text="opt.label"></div>
+                                                <div class="text-[11px] text-slate-500" x-text="opt.desc"></div>
+                                            </div>
+                                        </label>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                        <p class="text-[11px] text-slate-500">Tip: edit/approve access also requires view access.</p>
+                    </div>
+                </div>
+
+                <!-- RIGHT: per-document table -->
+                <div class="col-span-7" x-show="userEditor.role === 'user'">
+                    <div class="card p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <div class="text-xs font-semibold text-slate-200">Per-document access</div>
+                                <div class="text-[11px] text-slate-500">For granting access to specific documents only. Skip if the wildcard rows on the left already cover this user.</div>
+                            </div>
+                            <input type="text" x-model="userEditor.docFilter" placeholder="Filter…"
+                                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs w-40 focus:outline-none focus:border-blue-500">
+                        </div>
+
+                        <!-- Per-phase grouped table -->
+                        <template x-for="phase in docPhases()" :key="phase">
+                            <div class="mb-4">
+                                <div class="flex items-center justify-between mb-1.5 px-2">
+                                    <div class="text-[10px] uppercase tracking-widest text-amber-500" x-text="phase + ' phase'"></div>
+                                    <div class="flex gap-1">
+                                        <button @click="bulkPhase(phase, 'view',    true)"  class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">all view</button>
+                                        <button @click="bulkPhase(phase, 'write',   true)"  class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">all edit</button>
+                                        <button @click="bulkPhase(phase, 'approve', true)"  class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">all approve</button>
+                                        <button @click="bulkPhase(phase, null,      false)" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400">clear</button>
+                                    </div>
+                                </div>
+                                <table class="w-full">
+                                    <thead>
+                                        <tr class="bg-slate-900/60">
+                                            <th class="text-left">Document</th>
+                                            <th class="w-20 text-center">View</th>
+                                            <th class="w-20 text-center">Edit</th>
+                                            <th class="w-20 text-center">Approve</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="dt in docTypesByPhase(phase)" :key="dt.doc_type">
+                                            <tr class="hover:bg-slate-800/30">
+                                                <td>
+                                                    <div class="text-slate-200 text-sm" x-text="dt.name"></div>
+                                                    <div class="text-[10px] text-slate-500 mono" x-text="dt.doc_type"></div>
+                                                </td>
+                                                <template x-for="action in ['view','write','approve']" :key="action">
+                                                    <td class="text-center">
+                                                        <input type="checkbox"
+                                                               :checked="userEditor.permissions.includes('doc:' + dt.doc_type + ':' + action)"
+                                                               @change="togglePerm('doc:' + dt.doc_type + ':' + action)">
+                                                    </td>
+                                                </template>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /EDITOR VIEW -->
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
     <!-- TAB: Documents                              -->
     <!-- ═══════════════════════════════════════════ -->
-    <div x-show="tab === 'documents'" x-cloak>
+    <div x-show="tab === 'documents' && can('documents')" x-cloak>
         <div class="flex gap-0" style="height: calc(100vh - 45px);">
 
             <!-- LEFT: Document TOC (collapsible) -->
@@ -638,7 +837,7 @@
                             <span class="pill pill-green" title="Gantt renderer active">GANTT</span>
                             <span class="pill" :class="planStatusPill()" x-text="(plan && plan.status) || 'no plan'"></span>
                             <span class="text-xs text-slate-500 mono" x-show="plan"
-                                  x-text="'v' + plan.version + ' · ' + formatTs(plan.generated_at)"></span>
+                                  x-text="plan ? ('v' + plan.version + ' · ' + formatTs(plan.generated_at)) : ''"></span>
                             <!-- Zoom -->
                             <div class="flex gap-0 ml-2" x-show="plan">
                                 <button class="px-2 py-1 text-xs border border-slate-700" :class="ganttMode==='Day' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Day')">Day</button>
@@ -646,9 +845,15 @@
                                 <button class="px-2 py-1 text-xs border border-slate-700 border-l-0" :class="ganttMode==='Month' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Month')">Month</button>
                                 <button class="px-2 py-1 text-xs border border-slate-700 border-l-0" :class="ganttMode==='Quarter Day' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" @click="setGanttMode('Quarter Day')">Qtr</button>
                             </div>
+                            <button @click="scrollToToday()" x-show="plan"
+                                    title="Scroll so today's line is centered"
+                                    class="ml-2 px-2 py-1 text-xs rounded bg-red-900/30 text-red-300 border border-red-700/40 hover:bg-red-800/40">
+                                Re-center
+                            </button>
                         </div>
                         <div class="flex items-center gap-2">
-                            <button @click="regeneratePlan()" :disabled="planBusy"
+                            <button x-show="can('project_plan_write')"
+                                    @click="regeneratePlan()" :disabled="planBusy"
                                     class="px-3 py-1.5 rounded text-xs font-medium bg-blue-800/50 text-blue-300 hover:bg-blue-700/50 border border-blue-700/50 disabled:opacity-40">
                                 <span x-show="!planBusy">Regenerate</span>
                                 <span x-show="planBusy">Working...</span>
@@ -659,7 +864,7 @@
                                     x-show="planVersions.length > 0">
                                 <span x-text="'Versions (' + planVersions.length + ')'"></span>
                             </button>
-                            <button x-show="plan && plan.status === 'draft'"
+                            <button x-show="plan && plan.status === 'draft' && can('project_plan_approve')"
                                     @click="approvePlan()" :disabled="planBusy"
                                     class="px-3 py-1.5 rounded text-xs font-medium bg-green-800/40 text-green-300 hover:bg-green-700/40 border border-green-700/40 disabled:opacity-40">
                                 Approve as Final
@@ -696,8 +901,32 @@
 
                     <!-- Gantt container -->
                     <div x-show="plan" class="flex-1 min-h-0 overflow-auto" style="background: #ffffff;">
-                        <div id="gantt-container" style="min-width: 100%;"></div>
+                        <div id="gantt-container" style="width: 100%; min-width: 100%; display: block;"></div>
                     </div>
+                    <style>
+                        #gantt-container .gantt-container { overflow: visible !important; min-width: 100%; }
+                        /* ── Header only: dark strip tall enough to cover year ribbon (top)
+                           AND the month/day label row (y ~40 in frappe-gantt). ── */
+                        #gantt-container .grid-header { fill: #0f172a; height: 56px !important; }
+                        #gantt-container .upper-text  { visibility: hidden; }   /* replaced by ribbon */
+                        #gantt-container .lower-text  { font-size: 11px !important; fill: #e2e8f0 !important; font-weight: 500; letter-spacing: 0.02em; }
+                        #gantt-container .year-ribbon      { fill: #1e293b; }
+                        #gantt-container .year-ribbon-text { fill: #f59e0b; font-size: 10px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; }
+                        #gantt-container .year-divider     { stroke: #334155; stroke-dasharray: 3,3; opacity: 0.6; }
+                        /* ── Chart body: keep light ── */
+                        #gantt-container .grid-background { fill: #ffffff; }
+                        #gantt-container .grid-row        { fill: #ffffff; }
+                        #gantt-container .grid-row:nth-child(even) { fill: #f8fafc; }
+                        #gantt-container .row-line        { stroke: #e2e8f0; }
+                        /* Uniform month dividers — same color/weight for every month line */
+                        #gantt-container .tick,
+                        #gantt-container .tick.thick      { stroke: #cbd5e1 !important; stroke-width: 1 !important; stroke-dasharray: none !important; }
+                        /* Milestones — amber diamond */
+                        #gantt-container .bar-milestone .bar        { display: none; }
+                        #gantt-container .bar-milestone .bar-label  { fill: #78350f !important; font-weight: 700; font-size: 11px; }
+                        #gantt-container .ms-diamond      { fill: #f59e0b; stroke: #b45309; stroke-width: 1; }
+                        #gantt-container .ms-diamond.past { fill: #94a3b8; stroke: #64748b; }
+                    </style>
 
                     <!-- Source summary footer -->
                     <div x-show="plan && plan.source_summary" class="border-t border-slate-700 px-4 py-2 text-[11px] text-slate-500"
@@ -727,7 +956,7 @@
                         </div>
                         <div class="flex items-center gap-2">
                             <!-- Regenerate button -->
-                            <button x-show="docTab === 'draft'"
+                            <button x-show="docTab === 'draft' && selectedDoc && canDoc('write', selectedDoc.doc_type)"
                                     @click="generateDoc()"
                                     :disabled="_isDocGenerating(selectedDoc && selectedDoc.id)"
                                     class="px-3 py-1.5 rounded text-xs font-medium bg-blue-800/50 text-blue-300 hover:bg-blue-700/50 border border-blue-700/50">
@@ -741,8 +970,8 @@
                                     x-show="docVersions.length > 0">
                                 <span x-text="'Versions (' + docVersions.length + ')'"></span>
                             </button>
-                            <!-- Finalize button -->
-                            <button x-show="docTab === 'draft' && docDraftHtml"
+                            <!-- Finalize button — per-document approve permission -->
+                            <button x-show="docTab === 'draft' && docDraftHtml && selectedDoc && canDoc('approve', selectedDoc.doc_type)"
                                     @click="finalizeDoc()"
                                     class="px-3 py-1.5 rounded text-xs font-medium bg-green-800/40 text-green-300 hover:bg-green-700/40 border border-green-700/40">
                                 Approve as Final
@@ -797,8 +1026,10 @@
                         <!-- Empty draft state -->
                         <div x-show="!docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id)"
                              class="flex-1 flex flex-col items-center justify-center text-slate-500 gap-3">
-                            <span class="text-sm" x-text="'Generate ' + (selectedDoc ? selectedDoc.name : '') + ' draft'"></span>
-                            <button @click="generateDoc()"
+                            <span class="text-sm" x-show="selectedDoc && canDoc('write', selectedDoc.doc_type)" x-text="'Generate ' + (selectedDoc ? selectedDoc.name : '') + ' draft'"></span>
+                            <span class="text-sm" x-show="selectedDoc && !canDoc('write', selectedDoc.doc_type)">No draft available — you don't have edit access for this document.</span>
+                            <button x-show="selectedDoc && canDoc('write', selectedDoc.doc_type)"
+                                    @click="generateDoc()"
                                     class="px-5 py-2.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-500">
                                 Generate Draft
                             </button>
@@ -812,8 +1043,8 @@
                         <div x-show="docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id)" class="flex-1 min-h-0">
                             <iframe :srcdoc="docDraftHtml" style="width:100%; height:100%; border:none; background:#fff;"></iframe>
                         </div>
-                        <!-- Refine bar (floating overlay) -->
-                        <div x-show="docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id)"
+                        <!-- Refine bar (floating overlay) — write permission required -->
+                        <div x-show="docDraftHtml && !_isDocGenerating(selectedDoc && selectedDoc.id) && selectedDoc && canDoc('write', selectedDoc.doc_type)"
                              class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-600/80 shadow-2xl"
                              style="background: rgba(17,26,46,0.95); backdrop-filter: blur(12px); width: 90%; max-width: 700px; z-index: 10;">
                             <input type="text" x-model="docRefinePrompt"
@@ -877,13 +1108,66 @@ function dashboard() {
         docRefinePrompt: '',
         docVersions: [],
         docShowVersions: false,
+        // Current user + users-admin state
+        me: null,
+        allPermissions: [],
+        permissionGroups: [
+            { title: 'Pipeline tab', options: [
+                { key: 'pipeline', label: 'View pipeline & system health', desc: 'See sync status, data freshness, watchdog checks.' },
+            ]},
+            { title: 'Documents — apply to ALL documents (wildcard)', options: [
+                { key: 'documents',         label: 'View ALL documents',          desc: 'Open the Documents tab and read every document.' },
+                { key: 'documents_write',   label: 'Generate & edit ALL drafts',  desc: 'Regenerate and refine drafts of any document.' },
+                { key: 'documents_approve', label: 'Approve ANY document as final', desc: 'Promote any draft to the final, signed-off version.' },
+            ]},
+            { title: 'Insights & Risk Register', options: [
+                { key: 'risk_register',       label: 'View insights & risks', desc: 'See raw insights and the risk register.' },
+                { key: 'risk_register_write', label: 'Promote / dismiss insights & regenerate', desc: 'Move insights to the risk register, dismiss, run refresh.' },
+            ]},
+            { title: 'Living Project Plan (Gantt)', options: [
+                { key: 'project_plan',         label: 'View project plan',        desc: 'See the Gantt chart and version history.' },
+                { key: 'project_plan_write',   label: 'Regenerate plan drafts',   desc: 'Generate new draft versions. Cannot approve.' },
+                { key: 'project_plan_approve', label: 'Approve plan as final',    desc: 'Promote a draft plan version to the final, sign-off version.' },
+            ]},
+            { title: 'Administration', options: [
+                { key: 'users_admin', label: 'Manage users & access', desc: 'Add/remove users, change roles and permissions, reset passwords.' },
+            ]},
+        ],
+        permLabels: {
+            'pipeline': 'Pipeline',
+            'documents': 'Documents (view)',
+            'documents_write': 'Documents (edit)',
+            'documents_approve': 'Documents (approve)',
+            'risk_register': 'Risk Register (view)',
+            'risk_register_write': 'Risk Register (edit)',
+            'project_plan': 'Project Plan (view)',
+            'project_plan_write': 'Project Plan (edit)',
+            'project_plan_approve': 'Project Plan (approve)',
+            'users_admin': 'User admin',
+        },
+        permsHuman(perms) {
+            if (!perms || !perms.length) return '—';
+            const dtMap = {};
+            for (const dt of (this.me && this.me.doc_types) || []) dtMap[dt.doc_type] = dt.name;
+            return perms.map(p => {
+                if (p.startsWith('doc:')) {
+                    const [, type, action] = p.split(':');
+                    const name = dtMap[type] || type;
+                    return name + ' (' + action + ')';
+                }
+                return this.permLabels[p] || p;
+            }).join(', ');
+        },
+        users: [],
+        userEditor: { open: false, mode: 'create', id: null, username: '', password: '', role: 'user', permissions: [], error: '', docFilter: '' },
+        newPw1: '', newPw2: '', pwBusy: false, pwError: '',
         // Living Project Plan (Gantt) state
         plan: null,
         planVersions: [],
         planShowVersions: false,
         planBusy: false,
         ganttInstance: null,
-        ganttMode: 'Week',
+        ganttMode: 'Month',
         rrDocTab: 'insights',
         docSidebarCollapsed: false,
         collapsedPhases: {},
@@ -1171,6 +1455,152 @@ function dashboard() {
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
         },
+        // ── Boot / auth / users admin ──
+        async boot(refreshSeconds) {
+            await this.loadMe();
+            // Default tab = first area the user can access
+            const order = ['pipeline', 'documents', 'users_admin'];
+            const tabFor = { pipeline: 'pipeline', documents: 'documents', users_admin: 'users' };
+            const firstAllowed = order.find(p => this.can(p));
+            this.tab = firstAllowed ? tabFor[firstAllowed] : 'pipeline';
+            // Only poll /api/status if the user can see the pipeline (it powers that tab).
+            if (this.can('pipeline')) {
+                this.load();
+                setInterval(() => this.load(), refreshSeconds * 1000);
+            }
+            // If they landed on Documents, kick off the doc list.
+            if (this.tab === 'documents') this.loadDocuments();
+            if (this.tab === 'users')     this.loadUsers();
+        },
+        async loadMe() {
+            try {
+                const r = await fetch((window.NEXORA_BASE || '') + '/api/me');
+                if (r.status === 401) { window.location.href = (window.NEXORA_BASE || '') + '/login'; return; }
+                const d = await r.json();
+                if (d.ok) {
+                    this.me = d.user;
+                    this.allPermissions = d.user.all_permissions || [];
+                }
+            } catch (e) { console.error('loadMe:', e); }
+        },
+        can(key) {
+            if (!this.me) return false;
+            if (this.me.role === 'admin') return true;
+            return (this.me.permissions || []).includes(key);
+        },
+        canDoc(action, docType) {
+            if (!this.me) return false;
+            if (this.me.role === 'admin') return true;
+            const perms = this.me.permissions || [];
+            const broad = { view: 'documents', write: 'documents_write', approve: 'documents_approve' }[action];
+            if (broad && perms.includes(broad)) return true;
+            return perms.includes('doc:' + docType + ':' + action);
+        },
+        async submitPasswordReset() {
+            this.pwError = '';
+            if (this.newPw1.length < 6) { this.pwError = 'Password must be at least 6 characters'; return; }
+            if (this.newPw1 !== this.newPw2) { this.pwError = 'Passwords do not match'; return; }
+            this.pwBusy = true;
+            try {
+                const r = await fetch((window.NEXORA_BASE || '') + '/api/me/password', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_password: this.newPw1 }),
+                });
+                const d = await r.json();
+                if (!d.ok) { this.pwError = d.error || 'Failed'; return; }
+                this.newPw1 = this.newPw2 = '';
+                await this.loadMe();
+            } finally { this.pwBusy = false; }
+        },
+        async loadUsers() {
+            try {
+                const r = await fetch((window.NEXORA_BASE || '') + '/api/users');
+                const d = await r.json();
+                if (d.ok) { this.users = d.users; this.allPermissions = d.all_permissions || this.allPermissions; }
+            } catch (e) { console.error('loadUsers:', e); }
+        },
+        openNewUser() {
+            this.userEditor = { open: true, mode: 'create', id: null, username: '', password: '', role: 'user',
+                                permissions: ['pipeline','documents','risk_register','project_plan'], error: '', docFilter: '' };
+        },
+        openEditUser(u) {
+            this.userEditor = { open: true, mode: 'edit', id: u.id, username: u.username, password: '',
+                                role: u.role, permissions: [...(u.permissions || [])], error: '', docFilter: '' };
+        },
+        closeEditor() { this.userEditor.open = false; this.userEditor.error = ''; },
+        togglePerm(perm) {
+            const i = this.userEditor.permissions.indexOf(perm);
+            if (i >= 0) this.userEditor.permissions.splice(i, 1);
+            else this.userEditor.permissions.push(perm);
+        },
+        docPhases() {
+            const seen = new Set();
+            for (const dt of (this.me && this.me.doc_types) || []) seen.add(dt.phase || 'other');
+            const order = ['ongoing','prepare','explore','realize','deploy','run','other'];
+            return [...seen].sort((a,b) => order.indexOf(a) - order.indexOf(b));
+        },
+        docTypesByPhase(phase) {
+            const filter = (this.userEditor.docFilter || '').toLowerCase().trim();
+            return ((this.me && this.me.doc_types) || [])
+                .filter(d => (d.phase || 'other') === phase)
+                .filter(d => !filter || d.name.toLowerCase().includes(filter) || d.doc_type.toLowerCase().includes(filter));
+        },
+        bulkPhase(phase, action, value) {
+            const docs = this.docTypesByPhase(phase);
+            const actions = action ? [action] : ['view','write','approve'];
+            for (const d of docs) {
+                for (const a of actions) {
+                    const key = 'doc:' + d.doc_type + ':' + a;
+                    const has = this.userEditor.permissions.includes(key);
+                    if (value && !has) this.userEditor.permissions.push(key);
+                    if (!value && has) this.userEditor.permissions.splice(this.userEditor.permissions.indexOf(key), 1);
+                }
+            }
+        },
+        async saveUser() {
+            this.userEditor.error = '';
+            const m = this.userEditor;
+            try {
+                let resp;
+                if (m.mode === 'create') {
+                    if (!m.username.trim() || !m.password) { m.error = 'Username and password required'; return; }
+                    resp = await fetch((window.NEXORA_BASE || '') + '/api/users', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: m.username.trim(), password: m.password, role: m.role, permissions: m.permissions }),
+                    });
+                } else {
+                    resp = await fetch((window.NEXORA_BASE || '') + '/api/users/' + m.id, {
+                        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ role: m.role, permissions: m.permissions }),
+                    });
+                }
+                const d = await resp.json();
+                if (!d.ok) { m.error = d.error || 'Failed'; return; }
+                this.closeEditor();
+                this.loadUsers();
+            } catch (e) { m.error = e.message; }
+        },
+        async toggleActive(u) {
+            if (!confirm((u.is_active ? 'Deactivate' : 'Reactivate') + ' user "' + u.username + '"?')) return;
+            const r = await fetch((window.NEXORA_BASE || '') + '/api/users/' + u.id, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: !u.is_active }),
+            });
+            const d = await r.json();
+            if (d.ok) this.loadUsers(); else alert(d.error || 'Failed');
+        },
+        async resetUserPw(u) {
+            const pw = prompt('New temporary password for ' + u.username + ' (they will be forced to reset on next login):');
+            if (!pw) return;
+            if (pw.length < 6) { alert('Password must be at least 6 characters'); return; }
+            const r = await fetch((window.NEXORA_BASE || '') + '/api/users/' + u.id, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pw }),
+            });
+            const d = await r.json();
+            if (d.ok) { this.loadUsers(); alert('Password reset. Share the new temp password with the user.'); }
+            else alert(d.error || 'Failed');
+        },
         // ── Living Project Plan (Gantt) ──
         isProjectPlan(doc) {
             if (!doc) return false;
@@ -1268,15 +1698,211 @@ function dashboard() {
                     padding: 16,
                     language: 'en',
                 });
+                this.$nextTick(() => setTimeout(() => { this.decorateMilestones(); this._expandSvgToFill(); this.extendMonthTicks(); this.decorateYearHeader(); this.drawTodayLine(); this.scrollToToday(); }, 50));
             } catch (e) {
                 console.error('Gantt render:', e);
                 el.innerHTML = '<div class="p-4 text-red-400 text-sm">Gantt render failed: ' + e.message + '</div>';
             }
         },
+        _todayX() {
+            const g = this.ganttInstance;
+            const svg = document.querySelector('#gantt-container svg');
+            if (!svg || !g || !g.gantt_start || !g.gantt_end) return null;
+            const start = g.gantt_start instanceof Date ? g.gantt_start : new Date(g.gantt_start);
+            const end   = g.gantt_end   instanceof Date ? g.gantt_end   : new Date(g.gantt_end);
+            const today = new Date();
+            if (today < start || today > end) return null;
+            // Use getBBox for real rendered dimensions — works in all view modes.
+            let gridX = 0, gridW = 0;
+            try {
+                const bb = svg.getBBox();
+                gridX = bb.x || 0;
+                gridW = bb.width || 0;
+            } catch (_) {}
+            if (!gridW) {
+                const vb = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
+                gridX = vb[0] || 0;
+                gridW = vb[2] || svg.clientWidth || 0;
+            }
+            const frac = (today - start) / (end - start);
+            return gridX + frac * gridW;
+        },
+        _chartHeight() {
+            const svg = document.querySelector('#gantt-container svg');
+            if (!svg) return 0;
+            try {
+                const bb = svg.getBBox();
+                if (bb.height) return bb.height;
+            } catch (_) {}
+            const vb = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
+            return vb[3] || svg.clientHeight || 0;
+        },
+        extendMonthTicks() {
+            const svg = document.querySelector('#gantt-container svg');
+            if (!svg) return;
+            const h = this._chartHeight();
+            if (!h) return;
+            // Extend EVERY vertical tick to run the full chart height — in Month view
+            // each column is a month, in Week/Day view thick ticks mark months.
+            svg.querySelectorAll('.tick').forEach(t => {
+                if (t.tagName.toLowerCase() === 'path') {
+                    const d = t.getAttribute('d') || '';
+                    const m = d.match(/M\s*([\d.]+)\s+([\d.]+)\s*v\s*([\d.]+)/i);
+                    if (m) {
+                        const x = m[1], y = m[2];
+                        t.setAttribute('d', `M ${x} ${y} v ${h - parseFloat(y)}`);
+                    }
+                } else if (t.tagName.toLowerCase() === 'line') {
+                    t.setAttribute('y2', h);
+                }
+            });
+        },
+        _expandSvgToFill() {
+            // Stretch the SVG to fill the scroll wrapper so the Today line reaches
+            // the bottom of the white area instead of stopping at the last task row.
+            const svg = document.querySelector('#gantt-container svg');
+            if (!svg) return;
+            const wrap = svg.closest('.overflow-auto');
+            if (!wrap) return;
+            let contentH = 0;
+            try { contentH = svg.getBBox().height; } catch (_) {}
+            const target = Math.max(contentH, wrap.clientHeight);
+            if (!target) return;
+            svg.setAttribute('height', target);
+            const vb = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
+            if (vb.length === 4) {
+                svg.setAttribute('viewBox', `${vb[0]} ${vb[1]} ${vb[2]} ${target}`);
+            }
+        },
+        scrollToToday() {
+            const wrapper = document.querySelector('#gantt-container').parentElement;
+            const x = this._todayX();
+            if (!wrapper || x == null) return;
+            const target = Math.max(0, x - wrapper.clientWidth / 2);
+            wrapper.scrollTo({ left: target, behavior: 'smooth' });
+        },
+        decorateYearHeader() {
+            const svg = document.querySelector('#gantt-container svg');
+            const g = this.ganttInstance;
+            if (!svg || !g || !g.gantt_start || !g.gantt_end) return;
+            svg.querySelectorAll('.year-ribbon,.year-ribbon-text,.year-divider').forEach(n => n.remove());
+            // Hide frappe-gantt's default upper-text (year label) — we're replacing it.
+            svg.querySelectorAll('.upper-text').forEach(n => n.setAttribute('visibility', 'hidden'));
+            const ns = 'http://www.w3.org/2000/svg';
+            const start = g.gantt_start instanceof Date ? g.gantt_start : new Date(g.gantt_start);
+            const end   = g.gantt_end   instanceof Date ? g.gantt_end   : new Date(g.gantt_end);
+            let gridX = 0, gridW = 0;
+            try { const bb = svg.getBBox(); gridX = bb.x || 0; gridW = bb.width || 0; } catch (_) {}
+            if (!gridW) return;
+            const totalMs = end - start;
+            if (totalMs <= 0) return;
+            const years = [];
+            const y0 = start.getUTCFullYear();
+            const yN = end.getUTCFullYear();
+            for (let y = y0; y <= yN; y++) {
+                const from = y === y0 ? start : new Date(Date.UTC(y, 0, 1));
+                const to   = y === yN ? end   : new Date(Date.UTC(y + 1, 0, 1));
+                const x = gridX + ((from - start) / totalMs) * gridW;
+                const w = ((to - from) / totalMs) * gridW;
+                years.push({ y, x, w });
+            }
+            const bandH = 16;
+            years.forEach(({ y, x, w }, i) => {
+                const rect = document.createElementNS(ns, 'rect');
+                rect.setAttribute('class', 'year-ribbon');
+                rect.setAttribute('x', x);
+                rect.setAttribute('y', 0);
+                rect.setAttribute('width', w);
+                rect.setAttribute('height', bandH);
+                svg.insertBefore(rect, svg.firstChild);
+                const txt = document.createElementNS(ns, 'text');
+                txt.setAttribute('class', 'year-ribbon-text');
+                txt.setAttribute('x', x + w / 2);
+                txt.setAttribute('y', bandH - 4);
+                txt.setAttribute('text-anchor', 'middle');
+                txt.textContent = y;
+                svg.appendChild(txt);
+                if (i > 0) {
+                    const div = document.createElementNS(ns, 'line');
+                    div.setAttribute('class', 'year-divider');
+                    div.setAttribute('x1', x);
+                    div.setAttribute('x2', x);
+                    div.setAttribute('y1', 0);
+                    div.setAttribute('y2', this._chartHeight());
+                    div.setAttribute('stroke', '#cbd5e1');
+                    div.setAttribute('stroke-width', '1');
+                    svg.appendChild(div);
+                }
+            });
+        },
+        decorateMilestones() {
+            const svg = document.querySelector('#gantt-container svg');
+            if (!svg) return;
+            svg.querySelectorAll('.ms-diamond').forEach(n => n.remove());
+            const ns = 'http://www.w3.org/2000/svg';
+            const todayIso = new Date().toISOString().slice(0, 10);
+            svg.querySelectorAll('.bar-wrapper.bar-milestone').forEach(wrap => {
+                const rect = wrap.querySelector('rect.bar');
+                if (!rect) return;
+                const x = parseFloat(rect.getAttribute('x'));
+                const y = parseFloat(rect.getAttribute('y'));
+                const h = parseFloat(rect.getAttribute('height'));
+                const cx = x + parseFloat(rect.getAttribute('width')) / 2;
+                const cy = y + h / 2;
+                const r = 6;
+                const diamond = document.createElementNS(ns, 'polygon');
+                diamond.setAttribute('class', 'ms-diamond');
+                diamond.setAttribute('points',
+                    `${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`);
+                // Grey-out milestones already past
+                const taskId = wrap.getAttribute('data-id') || '';
+                const task = (this.plan && this.plan.tasks || []).find(t => t.task_key === taskId);
+                if (task && task.end_date && task.end_date < todayIso) {
+                    diamond.classList.add('past');
+                }
+                // Insert as a sibling of the rect within its actual parent group.
+                const parent = rect.parentNode;
+                if (parent) parent.insertBefore(diamond, rect);
+                else wrap.appendChild(diamond);
+                rect.style.display = 'none';  // hide the thin default bar
+            });
+        },
+        drawTodayLine() {
+            const svg = document.querySelector('#gantt-container svg');
+            const g = this.ganttInstance;
+            if (!svg || !g || !g.gantt_start) return;
+            svg.querySelectorAll('.today-line').forEach(n => n.remove());
+            const x = this._todayX();
+            if (x == null) return;
+            const height = this._chartHeight();
+            const ns = 'http://www.w3.org/2000/svg';
+            const line = document.createElementNS(ns, 'line');
+            line.setAttribute('class', 'today-line');
+            line.setAttribute('x1', x);
+            line.setAttribute('x2', x);
+            line.setAttribute('y1', 0);
+            line.setAttribute('y2', height);
+            line.setAttribute('stroke', '#ef4444');
+            line.setAttribute('stroke-width', '2');
+            line.setAttribute('stroke-dasharray', '4,3');
+            line.setAttribute('pointer-events', 'none');
+            svg.appendChild(line);
+            const text = document.createElementNS(ns, 'text');
+            text.setAttribute('class', 'today-line');
+            text.setAttribute('x', x + 4);
+            text.setAttribute('y', 14);
+            text.setAttribute('fill', '#ef4444');
+            text.setAttribute('font-size', '11');
+            text.setAttribute('font-weight', '600');
+            text.setAttribute('pointer-events', 'none');
+            text.textContent = 'Today';
+            svg.appendChild(text);
+        },
         setGanttMode(mode) {
             this.ganttMode = mode;
             if (this.ganttInstance && this.ganttInstance.change_view_mode) {
-                try { this.ganttInstance.change_view_mode(mode); } catch (_) { this.renderGantt(); }
+                try { this.ganttInstance.change_view_mode(mode); this.$nextTick(() => setTimeout(() => { this.decorateMilestones(); this._expandSvgToFill(); this.extendMonthTicks(); this.decorateYearHeader(); this.drawTodayLine(); this.scrollToToday(); }, 50)); }
+                catch (_) { this.renderGantt(); }
             } else {
                 this.renderGantt();
             }

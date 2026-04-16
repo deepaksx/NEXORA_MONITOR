@@ -135,7 +135,98 @@ def graph_sync_stages() -> list[dict]:
             "severity": severity,
             "error_preview": (r["error_message"] or "").strip() or None,
         })
+    # Fireflies sync runs in a different repo (nxsys-working-bot) and writes to
+    # its own cursor table — not graph_sync_state. Surface it as an extra row so
+    # it shows up in the same panel with the same thresholds logic downstream.
+    out = [r for r in out if r.get("sync_type") != "fireflies"]
+    ff = fireflies_stage()
+    if ff is not None:
+        out.append(ff)
     return out
+
+
+def fireflies_stage() -> dict | None:
+    """Synthetic stage row for the Fireflies transcript sync.
+
+    Shape matches graph_sync_stages() rows so the Graph Sync — Stages table,
+    pipeline severity roll-up, and issues() handler all pick it up with no
+    template or caller changes.
+
+    fireflies_sync_state is owned by the nxsys-working-bot repo, so the schema
+    isn't controlled here — read defensively and pick the most recent datetime
+    column as the cursor watermark.
+
+    Thresholds are tighter than FRESHNESS_*: the sync job runs hourly, so a
+    2h-old cursor means at least one cycle has failed.
+    """
+    try:
+        rows = _fetch("nxsys", "SELECT * FROM fireflies_sync_state LIMIT 20")
+    except Exception as e:  # noqa: BLE001
+        # Most likely: table doesn't exist, or permissions. Either way it's a
+        # real monitoring gap — surface as red with the DB error preview.
+        return {
+            "sync_type": "fireflies",
+            "status": "error",
+            "last_sync_at": None,
+            "last_success_at": None,
+            "age_minutes": None,
+            "severity": "red",
+            "error_preview": f"fireflies_sync_state unreadable: {str(e)[:240]}",
+        }
+
+    if not rows:
+        return {
+            "sync_type": "fireflies",
+            "status": "empty",
+            "last_sync_at": None,
+            "last_success_at": None,
+            "age_minutes": None,
+            "severity": "yellow",
+            "error_preview": "fireflies_sync_state has no rows — sync job has never written cursor state",
+        }
+
+    # Find the most recent datetime across every column of every row.
+    latest: datetime | None = None
+    for r in rows:
+        for v in r.values():
+            if isinstance(v, datetime):
+                if latest is None or v > latest:
+                    latest = v
+
+    age = _age_minutes(latest)
+    if age is None:
+        return {
+            "sync_type": "fireflies",
+            "status": "no_timestamp",
+            "last_sync_at": None,
+            "last_success_at": None,
+            "age_minutes": None,
+            "severity": "yellow",
+            "error_preview": "fireflies_sync_state has no datetime column — cannot determine cursor age",
+        }
+
+    if age >= 360:      # 6h+ → multiple missed hourly cycles
+        severity = "red"
+        status = "stale"
+        err = f"Cursor hasn't advanced in {_fmt_age(age)} — hourly sync has missed multiple cycles"
+    elif age >= 120:    # 2h+ → at least one missed cycle
+        severity = "yellow"
+        status = "stale"
+        err = f"Cursor is {_fmt_age(age)} old — at least one hourly cycle has been skipped"
+    else:
+        severity = "green"
+        status = "success"
+        err = None
+
+    return {
+        "sync_type": "fireflies",
+        "status": status,
+        "last_sync_at": _iso(latest),
+        "last_success_at": _iso(latest),
+        "age_minutes": age,
+        "severity": severity,
+        "error_preview": err,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -501,6 +592,16 @@ def dismiss_insight(insight_id: int, project_id: int = 9) -> dict:
 #  Project Documents
 # ─────────────────────────────────────────────────────────────
 
+def doc_types_catalog() -> list[dict]:
+    """All distinct (doc_type, name, phase) tuples across projects — used to
+    populate the per-document permission editor."""
+    return _fetch("npm_projects", """
+        SELECT DISTINCT doc_type, name, phase
+        FROM project_documents
+        ORDER BY phase, name
+    """)
+
+
 def documents_list(project_id: int = 9) -> list[dict]:
     sql = """
         SELECT id, name, phase, doc_type, sort_order, status,
@@ -787,9 +888,15 @@ def pipeline_stages(stages: list[dict], freshness: list[dict],
     # 1. Humans — can't measure directly; use "are emails flowing?" as proxy
     humans_sev = by_src.get("emails", {}).get("severity", "unknown")
 
-    # 2. M365 / Fireflies — meetings + transcripts. These don't arrive on a
-    # fixed cadence (only when a meeting actually happens), so we use a
-    # much more lenient threshold: warn after 3 days, red after 7 days.
+    # 2. M365 / Fireflies — blend two signals:
+    #   (a) meeting + transcript data freshness (bursty — only when meetings
+    #       happen, so a lenient 3d/7d threshold is still right for the data
+    #       itself), and
+    #   (b) the fireflies sync JOB health from fireflies_sync_state, which has
+    #       tight 2h/6h thresholds because the job runs hourly. This is the
+    #       signal that catches "a meeting happened today but the sync job
+    #       never picked it up" — the exact case the lenient data-age
+    #       threshold would otherwise hide.
     def _meeting_sev(src: dict | None) -> str:
         if not src:
             return "unknown"
@@ -802,9 +909,11 @@ def pipeline_stages(stages: list[dict], freshness: list[dict],
             return "yellow"
         return "green"
 
+    ff_sev = by_stage.get("fireflies", {}).get("severity", "unknown")
     m365_sev = _worst(
         _meeting_sev(by_src.get("meetings")),
         _meeting_sev(by_src.get("meeting_transcripts")),
+        ff_sev,
     )
 
     # 3. Graph Sync — worst of the 5 sync stages
@@ -994,42 +1103,83 @@ _SAP_PHASES = [
 ]
 
 
-def _distribute_phases(start: _date, end: _date) -> list[dict]:
-    """Split [start, end] into the six SAP Activate phases with plausible weights."""
-    total_days = max((end - start).days, 6)
-    # Weights sum to 1.0; roughly matches SAP Activate proportions.
-    weights = [0.08, 0.12, 0.25, 0.30, 0.15, 0.10]
-    spans = []
-    cursor = start
-    for (key, label), w in zip(_SAP_PHASES, weights):
-        dur = max(int(total_days * w), 1)
-        phase_end = cursor + _timedelta(days=dur - 1)
-        if phase_end > end:
-            phase_end = end
-        spans.append({"key": key, "label": label, "start": cursor, "end": phase_end})
-        cursor = phase_end + _timedelta(days=1)
-        if cursor > end:
-            cursor = end
-    # Ensure the last phase reaches the project end exactly.
-    if spans:
-        spans[-1]["end"] = end
+def _distribute_phases(start: _date, end: _date, go_live: _date | None = None) -> list[dict]:
+    """Split [start, end] into the six SAP Activate phases.
+
+    If `go_live` is provided, the 5 pre-go-live phases (Discover → Deploy) span
+    [start, go_live] proportionally, and Run (Hypercare) covers (go_live, end].
+    Otherwise, falls back to simple proportional weights across the full span.
+    """
+    # Pre-go-live weights (Discover, Prepare, Explore, Realize, Deploy).
+    pre_weights = [0.09, 0.13, 0.28, 0.33, 0.17]  # normalized to 1.0
+    full_weights = pre_weights + [0.10]           # + Run
+
+    spans: list[dict] = []
+    if go_live and start < go_live <= end:
+        total = max((go_live - start).days, 5)
+        cursor = start
+        for (key, label), w in zip(_SAP_PHASES[:5], pre_weights):
+            dur = max(int(total * w), 1)
+            phase_end = cursor + _timedelta(days=dur - 1)
+            if phase_end > go_live:
+                phase_end = go_live
+            spans.append({"key": key, "label": label, "start": cursor, "end": phase_end})
+            cursor = phase_end + _timedelta(days=1)
+        # Anchor Deploy to end exactly on go-live.
+        spans[-1]["end"] = go_live
+        # Run / Hypercare: day after go-live → project end.
+        run_start = go_live + _timedelta(days=1)
+        run_end   = end if end > run_start else run_start
+        spans.append({"key": "run", "label": _SAP_PHASES[5][1],
+                      "start": run_start, "end": run_end})
+    else:
+        total_days = max((end - start).days, 6)
+        cursor = start
+        for (key, label), w in zip(_SAP_PHASES, full_weights):
+            dur = max(int(total_days * w), 1)
+            phase_end = cursor + _timedelta(days=dur - 1)
+            if phase_end > end:
+                phase_end = end
+            spans.append({"key": key, "label": label, "start": cursor, "end": phase_end})
+            cursor = phase_end + _timedelta(days=1)
+            if cursor > end:
+                cursor = end
+        if spans:
+            spans[-1]["end"] = end
     return spans
 
 
 def _placeholder_tasks(project: dict, milestones: list[dict]) -> list[dict]:
     """Build a seed Gantt task list from project dates + SAP phases + ke_milestones."""
-    start = project.get("start_date") or _date.today()
-    end = project.get("target_go_live") or (start + _timedelta(days=180))
-    if isinstance(start, str):
-        start = _date.fromisoformat(start[:10])
-    if isinstance(end, str):
-        end = _date.fromisoformat(end[:10])
+    def _to_date(v):
+        if v is None: return None
+        if isinstance(v, _date): return v
+        if isinstance(v, str): return _date.fromisoformat(v[:10])
+        return None
+
+    start = _to_date(project.get("start_date")) or _date.today()
+    end   = _to_date(project.get("target_go_live")) or (start + _timedelta(days=180))
     if end <= start:
         end = start + _timedelta(days=180)
 
+    # Resolve Go-Live: prefer a ke_milestones row titled literally "Go-Live"
+    # (or "Phase One Go-Live"). Fallback to projects.target_go_live.
+    go_live = None
+    for m in (milestones or []):
+        title = (m.get("title") or "").strip().lower()
+        if title in ("go-live", "go live", "phase one go-live", "phase 1 go-live"):
+            d = _to_date(m.get("target_date"))
+            if d and (go_live is None or d < go_live):
+                go_live = d
+    if go_live is None:
+        go_live = _to_date(project.get("target_go_live")) or end
+    # Make sure end is at least go-live + a hypercare tail.
+    if end < go_live:
+        end = go_live + _timedelta(days=30)
+
     tasks: list[dict] = []
     prev_phase_key = None
-    for span in _distribute_phases(start, end):
+    for span in _distribute_phases(start, end, go_live=go_live):
         tasks.append({
             "task_key":         f"phase_{span['key']}",
             "parent_key":       None,
@@ -1044,49 +1194,44 @@ def _placeholder_tasks(project: dict, milestones: list[dict]) -> list[dict]:
             "depends_on":       [prev_phase_key] if prev_phase_key else [],
             "source_refs":      {"seed": "placeholder"},
         })
-        # Phase-gate milestone at end of each phase.
-        tasks.append({
-            "task_key":         f"gate_{span['key']}",
-            "parent_key":       f"phase_{span['key']}",
-            "name":             f"{span['label']} — Phase Gate",
-            "sap_phase":        span["key"],
-            "workstream":       None,
-            "owner":            "Steering Committee",
-            "start_date":       span["end"].isoformat(),
-            "end_date":         span["end"].isoformat(),
-            "percent_complete": 0,
-            "is_milestone":     True,
-            "depends_on":       [f"phase_{span['key']}"],
-            "source_refs":      {"seed": "placeholder"},
-        })
+        # Deploy's phase-gate IS the Go-Live milestone — don't create a duplicate.
+        if span["key"] == "deploy":
+            tasks.append({
+                "task_key":         "go_live",
+                "parent_key":       "phase_deploy",
+                "name":             "Go-Live",
+                "sap_phase":        "deploy",
+                "workstream":       None,
+                "owner":            "Client + NXSYS",
+                "start_date":       go_live.isoformat(),
+                "end_date":         go_live.isoformat(),
+                "percent_complete": 0,
+                "is_milestone":     True,
+                "depends_on":       ["phase_deploy"],
+                "source_refs":      {"seed": "placeholder", "type": "go_live"},
+            })
+        else:
+            tasks.append({
+                "task_key":         f"gate_{span['key']}",
+                "parent_key":       f"phase_{span['key']}",
+                "name":             f"{span['label']} — Phase Gate",
+                "sap_phase":        span["key"],
+                "workstream":       None,
+                "owner":            "Steering Committee",
+                "start_date":       span["end"].isoformat(),
+                "end_date":         span["end"].isoformat(),
+                "percent_complete": 0,
+                "is_milestone":     True,
+                "depends_on":       [f"phase_{span['key']}"],
+                "source_refs":      {"seed": "placeholder"},
+            })
         prev_phase_key = f"phase_{span['key']}"
 
-    # Merge in any ke_milestones the project already has.
-    for idx, m in enumerate(milestones or []):
-        td = m.get("target_date")
-        if not td:
-            continue
-        if isinstance(td, str):
-            td = td[:10]
-        elif hasattr(td, "isoformat"):
-            td = td.isoformat()
-        else:
-            td = str(td)
-        tasks.append({
-            "task_key":         f"ke_milestone_{idx}",
-            "parent_key":       None,
-            "name":             m.get("title") or f"Milestone {idx+1}",
-            "sap_phase":        (m.get("phase") or "").lower() or None,
-            "workstream":       None,
-            "owner":            None,
-            "start_date":       td,
-            "end_date":         td,
-            "percent_complete": 0,
-            "is_milestone":     True,
-            "depends_on":       [],
-            "source_refs":      {"ke_milestones": True},
-        })
-
+    # Note: ke_milestones are intentionally NOT dumped into the placeholder.
+    # They are auto-extracted from documents and contain many duplicates /
+    # micro-entries that clutter the Gantt. A placeholder v1 should be the
+    # clean SAP Activate skeleton (phases + gates only). Father-driven
+    # generation will layer in curated tasks from validated meetings later.
     return tasks
 
 
@@ -1208,9 +1353,11 @@ def plan_create_placeholder(project_id: int, generated_by: str = "placeholder") 
         next_v = cur.fetchone()["v"]
 
         source_summary = (
-            f"Placeholder v1 seeded from project start {project.get('start_date')} "
+            f"Placeholder seeded from project start {project.get('start_date')} "
             f"→ go-live {project.get('target_go_live')} "
-            f"across 6 SAP Activate phases + {len(milestones)} ke_milestones."
+            f"across 6 SAP Activate phases + phase gates. "
+            f"({len(milestones)} ke_milestones available in project data but not auto-imported — "
+            f"curated tasks will be added by Father-driven regeneration.)"
         )
 
         cur.execute("""
